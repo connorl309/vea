@@ -1,19 +1,32 @@
-//! Turn one parsed instruction into bytes. Immediate width is chosen here, by
-//! looking at the value - never declared in the ISA table.
-
-use std::collections::HashMap;
+//! Turn one parsed instruction into bytes.
+//!
+//! A literal immediate is sized here from its value. A label reference can't
+//! be - the address isn't known yet - so it gets an 8-byte zero placeholder
+//! and a `Fixup` telling the assembler where to write the address later.
+//! Label immediates are always 64-bit.
 
 use crate::ast::{Instr, Operand};
 use crate::err::Result;
 use crate::isa::format::Form;
 use crate::isa::{framing, opcodes};
 
-/// Symbol table: label name -> address.
-pub type Symbols = HashMap<String, i128>;
+/// Width, in bytes, of a label address once backfilled.
+pub const ADDR_WIDTH: usize = 8;
+
+pub struct Encoded {
+    pub bytes: Vec<u8>,
+    /// Set when the instruction references a label.
+    pub fixup: Option<Fixup>,
+}
+
+pub struct Fixup {
+    /// Offset of the immediate field within `bytes`.
+    pub at: usize,
+    pub symbol: String,
+}
 
 /// Smallest byte count that can hold `v`, read as either signed or unsigned:
-/// 0, 1, 2, 4, or 8. Returns 16 for values that don't fit in 64 bits so the
-/// caller can reject them.
+/// 0, 1, 2, 4, or 8. Returns 16 for values that don't fit in 64 bits.
 pub fn min_width(v: i128) -> u8 {
     if v == 0 {
         return 0;
@@ -33,34 +46,37 @@ fn be_bytes(v: i128, width: u8) -> Vec<u8> {
     v.to_be_bytes()[16 - width as usize..].to_vec()
 }
 
-/// Full frame for `ins`. `syms` must already hold every referenced label.
-pub fn build(ins: &Instr, syms: &Symbols) -> Result<Vec<u8>> {
+pub fn build(ins: &Instr) -> Result<Encoded> {
     let def = opcodes::by_mnemonic(&ins.mnemonic)
         .ok_or_else(|| asm_err!("unknown instruction `{}`", ins.mnemonic))?;
 
-    let (regs, imm) = operands_for(def.form, &ins.operands, syms)?;
+    let (regs, imm) = operands_for(def.form, &ins.operands)?;
 
-    let imm_bytes = match imm {
-        None => Vec::new(),
-        Some(v) => {
+    let (imm_bytes, symbol) = match imm {
+        ImmArg::None => (Vec::new(), None),
+        ImmArg::Int(v) => {
             let w = min_width(v);
             if w > 8 {
                 return Err(asm_err!("immediate {v} does not fit in 64 bits"));
             }
-            be_bytes(v, w)
+            (be_bytes(v, w), None)
         }
+        ImmArg::Sym(name) => (vec![0u8; ADDR_WIDTH], Some(name)),
     };
 
-    framing::frame(def.opcode, def.flags, &regs, &imm_bytes)
+    let bytes = framing::frame(def.opcode, def.flags, &regs, &imm_bytes)?;
+    let fixup = symbol.map(|symbol| Fixup { at: 2 + regs.len(), symbol });
+    Ok(Encoded { bytes, fixup })
 }
 
-/// Encoded length of `ins` in bytes (no alignment padding).
-pub fn size(ins: &Instr, syms: &Symbols) -> Result<usize> {
-    Ok(build(ins, syms)?.len())
+enum ImmArg {
+    None,
+    Int(i128),
+    Sym(String),
 }
 
-/// Match operands against the form, returning (register bytes, immediate value).
-fn operands_for(form: Form, ops: &[Operand], syms: &Symbols) -> Result<(Vec<u8>, Option<i128>)> {
+/// Match operands against the form: (register bytes, immediate argument).
+fn operands_for(form: Form, ops: &[Operand]) -> Result<(Vec<u8>, ImmArg)> {
     let want = |n: usize| -> Result<()> {
         if ops.len() == n {
             Ok(())
@@ -76,14 +92,11 @@ fn operands_for(form: Form, ops: &[Operand], syms: &Symbols) -> Result<(Vec<u8>,
         }
     };
 
-    let imm = |o: &Operand| -> Result<i128> {
+    let imm = |o: &Operand| -> Result<ImmArg> {
         match o {
-            Operand::Int(v) => Ok(*v),
-            Operand::Sym(s) => syms
-                .get(s)
-                .copied()
-                .ok_or_else(|| asm_err!("undefined symbol `{s}`")),
-            _ => Err(asm_err!("expected an immediate")),
+            Operand::Int(v) => Ok(ImmArg::Int(*v)),
+            Operand::Sym(s) => Ok(ImmArg::Sym(s.clone())),
+            _ => Err(asm_err!("expected an immediate or label")),
         }
     };
 
@@ -91,37 +104,37 @@ fn operands_for(form: Form, ops: &[Operand], syms: &Symbols) -> Result<(Vec<u8>,
     Ok(match form {
         Nullary => {
             want(0)?;
-            (vec![], None)
+            (vec![], ImmArg::None)
         }
         R => {
             want(1)?;
-            (vec![reg(&ops[0])?], None)
+            (vec![reg(&ops[0])?], ImmArg::None)
         }
         RR => {
             want(2)?;
-            (vec![reg(&ops[0])?, reg(&ops[1])?], None)
+            (vec![reg(&ops[0])?, reg(&ops[1])?], ImmArg::None)
         }
         RRR => {
             want(3)?;
-            (vec![reg(&ops[0])?, reg(&ops[1])?, reg(&ops[2])?], None)
+            (vec![reg(&ops[0])?, reg(&ops[1])?, reg(&ops[2])?], ImmArg::None)
         }
         RI => {
             want(2)?;
-            (vec![reg(&ops[0])?], Some(imm(&ops[1])?))
+            (vec![reg(&ops[0])?], imm(&ops[1])?)
         }
         RRI => {
             want(3)?;
-            (vec![reg(&ops[0])?, reg(&ops[1])?], Some(imm(&ops[2])?))
+            (vec![reg(&ops[0])?, reg(&ops[1])?], imm(&ops[2])?)
         }
         I => {
             want(1)?;
-            (vec![], Some(imm(&ops[0])?))
+            (vec![], imm(&ops[0])?)
         }
         RMem => {
             want(2)?;
             let rd = reg(&ops[0])?;
             match &ops[1] {
-                Operand::Mem { base, disp } => (vec![rd, *base], Some(*disp)),
+                Operand::Mem { base, disp } => (vec![rd, *base], ImmArg::Int(*disp)),
                 _ => return Err(asm_err!("expected `[rb + disp]`")),
             }
         }
@@ -145,8 +158,16 @@ mod tests {
     }
 
     #[test]
-    fn big_endian_truncation() {
-        assert_eq!(be_bytes(0x0100, 2), vec![0x01, 0x00]);
-        assert_eq!(be_bytes(-1, 1), vec![0xFF]);
+    fn label_ref_reserves_eight_bytes() {
+        let e = build(&Instr {
+            mnemonic: "jmp".into(),
+            operands: vec![Operand::Sym("target".into())],
+        })
+        .unwrap();
+        // opcode + lenbyte + 8 placeholder bytes
+        assert_eq!(e.bytes.len(), 2 + ADDR_WIDTH);
+        let f = e.fixup.unwrap();
+        assert_eq!(f.at, 2);
+        assert_eq!(f.symbol, "target");
     }
 }
