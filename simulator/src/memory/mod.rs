@@ -23,6 +23,18 @@ pub enum Width {
     Long,
 }
 
+impl Width {
+    // Byte length of an access of this width.
+    pub const fn bytes(self) -> u64 {
+        match self {
+            Width::Byte => 1,
+            Width::Half => 2,
+            Width::Word => 4,
+            Width::Long => 8,
+        }
+    }
+}
+
 // An access that could not be completed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Fault {

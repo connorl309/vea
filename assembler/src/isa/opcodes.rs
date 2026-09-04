@@ -11,6 +11,7 @@
 
 use super::format::Form;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InstrDef {
     pub mnemonic: &'static str,
     pub opcode: u8,
