@@ -1,9 +1,9 @@
-//! Property test: generate random-but-valid instructions as source text,
-//! assemble them, and compare against bytes built a second, independent way
-//! (no calls into the crate's encoder or framing helpers).
-//!
-//! On failure the panic prints the exact source that broke - paste it into a
-//! focused test to reproduce.
+// Property test: generate random-but-valid instructions as source text,
+// assemble them, and compare against bytes built a second, independent way
+// (no calls into the crate's encoder or framing helpers).
+//
+// On failure the panic prints the exact source that broke - paste it into a
+// focused test to reproduce.
 
 use asm::assemble;
 use asm::isa::Form;

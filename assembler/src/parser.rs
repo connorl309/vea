@@ -1,11 +1,11 @@
-//! Line-oriented parser. The format is intentionally rigid:
-//!
-//!   - one statement per line
-//!   - a label is `name:` alone on its line, nothing else
-//!   - everything else is `mnemonic op, op, ...`
-//!   - `;` or `//` starts a comment
-//!
-//! Anything that doesn't fit is an error, not a guess.
+// Line-oriented parser. The format is intentionally rigid:
+//
+//   - one statement per line
+//   - a label is `name:` alone on its line, nothing else
+//   - everything else is `mnemonic op, op, ...`
+//   - `;` or `//` starts a comment
+//
+// Anything that doesn't fit is an error, not a guess.
 
 use crate::ast::{Instr, Item, ItemKind, Operand, Program};
 use crate::err::{Result, at};

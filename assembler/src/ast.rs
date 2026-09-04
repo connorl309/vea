@@ -1,5 +1,5 @@
-//! The parse tree. One `Item` per source statement: a label alone on its
-//! line, or an instruction. That's the whole grammar.
+// The parse tree. One `Item` per source statement: a label alone on its
+// line, or an instruction. That's the whole grammar.
 
 pub type Line = usize;
 

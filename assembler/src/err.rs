@@ -1,5 +1,5 @@
-//! Errors are just strings. Layers that know the line number prefix it
-//! themselves (see `at`). The CLI prints whatever bubbles up.
+// Errors are just strings. Layers that know the line number prefix it
+// themselves (see `at`). The CLI prints whatever bubbles up.
 
 pub type Result<T> = std::result::Result<T, String>;
 

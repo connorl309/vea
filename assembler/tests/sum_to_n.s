@@ -1,4 +1,4 @@
-movi r1, 10000 // we will sum `i` for i in 0..r1
+movi r1, #10000 // we will sum `i` for i in 0..r1
 
 sum_loop:
     addi r0, r0, 1 // inc our `i`

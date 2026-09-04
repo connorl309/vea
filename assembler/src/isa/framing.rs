@@ -1,19 +1,19 @@
-//! How the bytes of a single instruction are laid out. If the encoding frame
-//! ever changes, this is the only file that should need touching.
-//!
-//! Frame:  [opcode:1] [PLEN:4 | FLAGS:4] [payload: PLEN bytes]
-//!
-//!   - Total length is 2 + PLEN, i.e. 2..=17 bytes.
-//!   - PLEN counts the whole payload: one byte per register operand (in
-//!     source order) followed by a contiguous big-endian immediate of
-//!     0/1/2/4/8 bytes.
-//!   - PLEN is the high nibble of byte 2, FLAGS the low nibble.
-//!   - FLAGS meaning is per-opcode; the assembler emits the constant carried
-//!     by the chosen mnemonic (see isa/opcodes.rs).
-//!
-//! Instructions are 2-byte aligned. When a frame ends on an odd address the
-//! layout layer emits an 0x00 pad byte before the next instruction; that pad
-//! is not part of either frame.
+// How the bytes of a single instruction are laid out. If the encoding frame
+// ever changes, this is the only file that should need touching.
+//
+// Frame:  [opcode:1] [PLEN:4 | FLAGS:4] [payload: PLEN bytes]
+//
+//   - Total length is 2 + PLEN, i.e. 2..=17 bytes.
+//   - PLEN counts the whole payload: one byte per register operand (in
+//     source order) followed by a contiguous big-endian immediate of
+//     0/1/2/4/8 bytes.
+//   - PLEN is the high nibble of byte 2, FLAGS the low nibble.
+//   - FLAGS meaning is per-opcode; the assembler emits the constant carried
+//     by the chosen mnemonic (see isa/opcodes.rs).
+//
+// Instructions are 2-byte aligned. When a frame ends on an odd address the
+// layout layer emits an 0x00 pad byte before the next instruction; that pad
+// is not part of either frame.
 
 use crate::err::Result;
 

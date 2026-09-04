@@ -1,13 +1,13 @@
-//! The instruction table
-//!
-//! Columns:
-//!   mnemonic  what you type
-//!   opcode    the opcode byte
-//!   form      operand shape (isa/format.rs) - also says if there's an immediate
-//!   flags     the FLAGS nibble to emit; lets `ldb` / `ldbu` share an opcode
-//!   summary   brief description
-//!
-//! Immediate width is not declared here; it's inferred from the value.
+// The instruction table
+//
+// Columns:
+//   mnemonic  what you type
+//   opcode    the opcode byte
+//   form      operand shape (isa/format.rs) - also says if there's an immediate
+//   flags     the FLAGS nibble to emit; lets `ldb` / `ldbu` share an opcode
+//   summary   brief description
+//
+// Immediate width is not declared here; it's inferred from the value.
 
 use super::format::Form;
 

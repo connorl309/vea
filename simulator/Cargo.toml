@@ -4,3 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+rand = "0.10.2"
+ratatui = "0.30.2"
+
+# The assembler pipeline + ISA tables. The simulator assembles source in-process
+# and (later) executes the image against the same ISA definition.
+asm = { path = "../assembler", package = "assembler" }

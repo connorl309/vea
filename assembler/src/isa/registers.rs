@@ -1,4 +1,4 @@
-//! Register file
+// Register file
 
 /// Number of general-purpose registers.
 pub const COUNT: u8 = 32;

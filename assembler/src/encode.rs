@@ -1,9 +1,9 @@
-//! Turn one parsed instruction into bytes.
-//!
-//! A literal immediate is sized here from its value. A label reference can't
-//! be - the address isn't known yet - so it gets an 8-byte zero placeholder
-//! and a `Fixup` telling the assembler where to write the address later.
-//! Label immediates are always 64-bit.
+// Turn one parsed instruction into bytes.
+//
+// A literal immediate is sized here from its value. A label reference can't
+// be - the address isn't known yet - so it gets an 8-byte zero placeholder
+// and a `Fixup` telling the assembler where to write the address later.
+// Label immediates are always 64-bit.
 
 use crate::ast::{Instr, Operand};
 use crate::err::Result;

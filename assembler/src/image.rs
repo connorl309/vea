@@ -1,4 +1,4 @@
-//! Ways to look at the assembled bytes.
+// Ways to look at the assembled bytes.
 
 use crate::assemble::Object;
 

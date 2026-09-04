@@ -1,5 +1,5 @@
-//! The machine definition. Everything the assembler knows about the ISA lives
-//! under here; the rest of the crate treats it as read-only.
+// The machine definition. Everything the assembler knows about the ISA lives
+// under here; the rest of the crate treats it as read-only.
 
 pub mod format;
 pub mod framing;

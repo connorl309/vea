@@ -1,13 +1,13 @@
-//! Source text -> a flat byte image starting at address 0.
-//!
-//! One pass, instruction by instruction:
-//!   - a label records the current address
-//!   - an instruction is encoded straight away; if it references a label the
-//!     immediate is left as 8 zero bytes and a fixup is queued
-//!   - between instructions we pad to 2-byte alignment
-//!
-//! Then a second short walk over the queued fixups writes each label's
-//! address (big-endian, 64-bit) into the slot that was reserved for it.
+// Source text -> a flat byte image starting at address 0.
+//
+// One pass, instruction by instruction:
+//   - a label records the current address
+//   - an instruction is encoded straight away; if it references a label the
+//     immediate is left as 8 zero bytes and a fixup is queued
+//   - between instructions we pad to 2-byte alignment
+//
+// Then a second short walk over the queued fixups writes each label's
+// address (big-endian, 64-bit) into the slot that was reserved for it.
 
 use std::collections::HashMap;
 

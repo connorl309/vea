@@ -1,4 +1,4 @@
-//! CLI wrapper. `asm <input> [-o out] [--hex] [--syms] [--list-isa]`
+// CLI wrapper. `asm <input> [-o out] [--hex] [--syms] [--list-isa]`
 
 use std::path::PathBuf;
 use std::process::exit;
