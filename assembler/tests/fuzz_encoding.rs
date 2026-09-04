@@ -9,7 +9,7 @@ use asm::assemble;
 use asm::isa::Form;
 use asm::isa::opcodes::INSTRUCTIONS;
 
-/// Independent minimal width: 0/1/2/4/8 bytes, signed-or-unsigned reading.
+// Independent minimal width: 0/1/2/4/8 bytes, signed-or-unsigned reading.
 fn ref_width(v: i128) -> u8 {
     if v == 0 {
         0
@@ -24,12 +24,12 @@ fn ref_width(v: i128) -> u8 {
     }
 }
 
-/// Independent big-endian encoding via shift-and-mask.
+// Independent big-endian encoding via shift-and-mask.
 fn ref_be(v: i128, width: u8) -> Vec<u8> {
     (0..width).rev().map(|i| (v >> (i as u32 * 8)) as u8).collect()
 }
 
-/// Independent frame layout: [opcode][PLEN<<4 | FLAGS][regs][imm].
+// Independent frame layout: [opcode][PLEN<<4 | FLAGS][regs][imm].
 fn ref_frame(opcode: u8, flags: u8, regs: &[u8], imm: &[u8]) -> Vec<u8> {
     let plen = (regs.len() + imm.len()) as u8;
     let mut v = vec![opcode, (plen << 4) | (flags & 0x0F)];
@@ -42,7 +42,7 @@ fn rand_reg() -> u8 {
     rand::random_range(0..32)
 }
 
-/// An immediate somewhere in one of the encodable width buckets.
+// An immediate somewhere in one of the encodable width buckets.
 fn rand_imm() -> i128 {
     match rand::random_range(0..7) {
         0 => 0,
@@ -64,7 +64,7 @@ fn render_imm(v: i128) -> String {
     if rand::random() { format!("#{bare}") } else { bare }
 }
 
-/// Build one instruction: its source line and the bytes it should encode to.
+// Build one instruction: its source line and the bytes it should encode to.
 fn gen_one() -> (String, Vec<u8>) {
     let def = &INSTRUCTIONS[rand::random_range(0..INSTRUCTIONS.len())];
     let m = def.mnemonic;

@@ -7,13 +7,14 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use crate::app::{App, Assembly, Panel};
+use crate::logger;
 use crate::memory;
 use crate::processor::REG_COUNT;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let rows = Layout::vertical([
         Constraint::Min(6),     // body
-        Constraint::Length(6),  // message log
+        Constraint::Length(8),  // live log
         Constraint::Length(1),  // status bar
     ])
     .split(frame.area());
@@ -26,7 +27,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     disassembly(frame, left[1], app);
     registers(frame, right[0], app);
     memory(frame, right[1], app);
-    message_log(frame, rows[1], app);
+    log_panel(frame, rows[1], app);
     status_bar(frame, rows[2], app);
 }
 
@@ -181,18 +182,28 @@ fn memory(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
 }
 
-fn message_log(frame: &mut Frame, area: Rect, app: &App) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::DarkGray))
-        .title(dim("  Messages"));
+fn log_panel(frame: &mut Frame, area: Rect, app: &App) {
+    let all = logger::snapshot();
+    let total = all.len();
 
+    // `scroll_of(Log)` is lines back from the live tail; 0 == following.
     let visible = area.height.saturating_sub(2).max(1) as usize;
-    let start = app.log.len().saturating_sub(visible);
-    let lines: Vec<Line> = app.log[start..].iter().map(|m| Line::from(m.as_str())).collect();
+    let back = (app.scroll_of(Panel::Log) as usize).min(total.saturating_sub(1));
+    let end = total - back;
+    let start = end.saturating_sub(visible);
 
-    frame.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
+    let title = if back == 0 {
+        format!("Log: {total}")
+    } else {
+        format!("Log: {total}  (-{back})")
+    };
+
+    let lines: Vec<Line> = all[start..end].iter().map(|m| Line::from(m.as_str())).collect();
+
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).block(panel(&title, app.focus == Panel::Log)),
+        area,
+    );
 }
 
 fn status_bar(frame: &mut Frame, area: Rect, app: &App) {

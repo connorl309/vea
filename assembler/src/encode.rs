@@ -10,23 +10,23 @@ use crate::err::Result;
 use crate::isa::format::Form;
 use crate::isa::{framing, opcodes};
 
-/// Width, in bytes, of a label address once backfilled.
+// Width, in bytes, of a label address once backfilled.
 pub const ADDR_WIDTH: usize = 8;
 
 pub struct Encoded {
     pub bytes: Vec<u8>,
-    /// Set when the instruction references a label.
+    // Set when the instruction references a label.
     pub fixup: Option<Fixup>,
 }
 
 pub struct Fixup {
-    /// Offset of the immediate field within `bytes`.
+    // Offset of the immediate field within `bytes`.
     pub at: usize,
     pub symbol: String,
 }
 
-/// Smallest byte count that can hold `v`, read as either signed or unsigned:
-/// 0, 1, 2, 4, or 8. Returns 16 for values that don't fit in 64 bits.
+// Smallest byte count that can hold `v`, read as either signed or unsigned:
+// 0, 1, 2, 4, or 8. Returns 16 for values that don't fit in 64 bits.
 pub fn min_width(v: i128) -> u8 {
     if v == 0 {
         return 0;
@@ -75,7 +75,7 @@ enum ImmArg {
     Sym(String),
 }
 
-/// Match operands against the form: (register bytes, immediate argument).
+// Match operands against the form: (register bytes, immediate argument).
 fn operands_for(form: Form, ops: &[Operand]) -> Result<(Vec<u8>, ImmArg)> {
     let want = |n: usize| -> Result<()> {
         if ops.len() == n {

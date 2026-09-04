@@ -79,7 +79,7 @@ fn parse_operand(line: usize, s: &str) -> Result<Operand> {
     Err(at(line, format!("can't parse operand `{s}`")))
 }
 
-/// `rb`, `rb + disp`, `rb - disp`
+// `rb`, `rb + disp`, `rb - disp`
 fn parse_mem(line: usize, inner: &str) -> Result<Operand> {
     let (base_str, disp) = match inner.find(['+', '-']) {
         Some(pos) => {
@@ -114,7 +114,7 @@ fn is_ident(s: &str) -> bool {
     cs.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
 }
 
-/// Parse `42`, `0x2a`, `0b1010`, `0o17`, `-1`, `1_000`.
+// Parse `42`, `0x2a`, `0b1010`, `0o17`, `-1`, `1_000`.
 pub fn parse_int(s: &str) -> Option<i128> {
     let s = s.trim();
 

@@ -5,29 +5,29 @@
 // in the payload, and whether a trailing immediate follows. Immediate width
 // is never declared - it's inferred from the value (see `encode::min_width`).
 
-/// The syntactic shape of an instruction's operands.
+// The syntactic shape of an instruction's operands.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Form {
-    /// `op`
+    // `op`
     Nullary,
-    /// `op rd`
+    // `op rd`
     R,
-    /// `op rd, rs`
+    // `op rd, rs`
     RR,
-    /// `op rd, rs1, rs2`
+    // `op rd, rs1, rs2`
     RRR,
-    /// `op rd, #imm`
+    // `op rd, #imm`
     RI,
-    /// `op rd, rs, #imm`
+    // `op rd, rs, #imm`
     RRI,
-    /// `op #imm`  (jump / branch / call targets)
+    // `op #imm`  (jump / branch / call targets)
     I,
-    /// `op rd, [rb + disp]`  (loads and stores; disp is the immediate)
+    // `op rd, [rb + disp]`  (loads and stores; disp is the immediate)
     RMem,
 }
 
 impl Form {
-    /// (register operand count, has a trailing immediate)
+    // (register operand count, has a trailing immediate)
     pub const fn shape(self) -> (u8, bool) {
         match self {
             Form::Nullary => (0, false),

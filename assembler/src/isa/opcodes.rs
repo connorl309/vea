@@ -93,13 +93,13 @@ const fn row(mnemonic: &'static str, opcode: u8, form: Form, flags: u8, summary:
     InstrDef { mnemonic, opcode, form, flags, summary }
 }
 
-/// Look up an instruction by the mnemonic the user typed (case-insensitive).
+// Look up an instruction by the mnemonic the user typed (case-insensitive).
 pub fn by_mnemonic(m: &str) -> Option<&'static InstrDef> {
     let m = m.to_ascii_lowercase();
     INSTRUCTIONS.iter().find(|i| i.mnemonic == m)
 }
 
-/// Look up by encoded (opcode, flags). Handy for disassembly and tests.
+// Look up by encoded (opcode, flags). Handy for disassembly and tests.
 pub fn by_opcode(opcode: u8, flags: u8) -> Option<&'static InstrDef> {
     INSTRUCTIONS.iter().find(|i| i.opcode == opcode && i.flags == flags)
 }

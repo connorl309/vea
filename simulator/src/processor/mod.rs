@@ -4,6 +4,7 @@ use asm::isa::registers;
 use asm::isa::*;
 
 use crate::memory;
+use crate::pipeline::ProcessorPipeline;
 pub const REG_COUNT: usize = registers::COUNT as usize;
 
 // The architectural register file.
@@ -27,6 +28,8 @@ pub struct Core {
     // DEBUG: breakpoints; list of (PC, name)
     breakpoints: HashMap<String, u64>,
     // TODO: return-address stack / link register for call/rets
+
+    pub pipeline: ProcessorPipeline,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +65,7 @@ impl Core {
             retired: 0,
             state: CoreState::Running(pc),
             breakpoints: HashMap::new(),
+            pipeline: ProcessorPipeline::new(),
         }
     }
 

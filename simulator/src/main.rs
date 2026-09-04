@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 mod app;
+mod logger;
 mod memory;
 mod pipeline;
 mod processor;

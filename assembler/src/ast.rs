@@ -28,12 +28,12 @@ pub struct Instr {
 
 #[derive(Debug)]
 pub enum Operand {
-    /// `r0`..`r31`
+    // `r0`..`r31`
     Reg(u8),
-    /// a literal: `42`, `0x2a`, `-1`, `'A'`
+    // a literal: `42`, `0x2a`, `-1`, `'A'`
     Int(i128),
-    /// a bare name, resolved to a label address later
+    // a bare name, resolved to a label address later
     Sym(String),
-    /// `[rb]`, `[rb + disp]`, `[rb - disp]` - displacement is always a literal
+    // `[rb]`, `[rb + disp]`, `[rb - disp]` - displacement is always a literal
     Mem { base: u8, disp: i128 },
 }

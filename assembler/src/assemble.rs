@@ -18,12 +18,12 @@ use crate::parser;
 
 pub struct Object {
     pub bytes: Vec<u8>,
-    /// label -> address, sorted by address
+    // label -> address, sorted by address
     pub symbols: Vec<(String, u64)>,
 }
 
 struct PendingFixup {
-    /// absolute offset of the immediate slot in `bytes`
+    // absolute offset of the immediate slot in `bytes`
     at: usize,
     symbol: String,
     line: usize,

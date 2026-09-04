@@ -9,6 +9,7 @@ use std::time::Duration;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
+use crate::logger;
 use crate::memory;
 use crate::processor::{self, Core};
 use crate::ui;
@@ -20,10 +21,17 @@ pub enum Panel {
     Disasm,
     Registers,
     Memory,
+    Log,
 }
 
 impl Panel {
-    pub const ORDER: [Panel; 4] = [Panel::Source, Panel::Disasm, Panel::Registers, Panel::Memory];
+    pub const ORDER: [Panel; 5] = [
+        Panel::Source,
+        Panel::Disasm,
+        Panel::Registers,
+        Panel::Memory,
+        Panel::Log,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -31,6 +39,7 @@ impl Panel {
             Panel::Disasm => "Disassembly",
             Panel::Registers => "Registers",
             Panel::Memory => "Memory",
+            Panel::Log => "Log",
         }
     }
 
@@ -67,10 +76,10 @@ pub struct App {
     pub assembly: Assembly,
 
     pub focus: Panel,
-    // Vertical scroll offset per panel, indexed by `Panel::index`.
-    pub scroll: [u16; 4],
+    // Vertical scroll offset per panel, indexed by `Panel::index`. For the Log
+    // panel this counts lines back from the live tail (0 == following).
+    pub scroll: [u16; 5],
 
-    pub log: Vec<String>,
     pub prompt: Option<Prompt>,
 
     quit: bool,
@@ -78,6 +87,7 @@ pub struct App {
 
 impl App {
     pub fn new() -> Self {
+        logger::line("ready - press 'o' to open a .s file");
         Self {
             core: processor::Core::new(0),
             source_path: None,
@@ -85,8 +95,7 @@ impl App {
             object: None,
             assembly: Assembly::None,
             focus: Panel::Source,
-            scroll: [0; 4],
-            log: vec!["ready - press 'o' to open a .s file".to_string()],
+            scroll: [0; 5],
             prompt: None,
             quit: false,
         }
@@ -122,17 +131,17 @@ impl App {
             Ok(text) => {
                 self.source = text;
                 self.source_path = Some(PathBuf::from(path));
-                self.scroll = [0; 4];
-                self.note(format!("loaded {path}"));
+                self.scroll = [0; 5];
+                logger::line(format!("loaded {path}"));
                 self.assemble();
             }
-            Err(e) => self.note(format!("open {path}: {e}")),
+            Err(e) => logger::line(format!("open {path}: {e}")),
         }
     }
 
     fn reload(&mut self) {
         let Some(path) = self.source_path.clone() else {
-            self.note("no file to reload");
+            logger::line("no file to reload");
             return;
         };
         self.load_source(&path.to_string_lossy());
@@ -146,7 +155,7 @@ impl App {
                     bytes: obj.bytes.len(),
                     symbols: obj.symbols.len(),
                 };
-                self.note(format!(
+                logger::line(format!(
                     "assembled: {} bytes, {} symbol(s)",
                     obj.bytes.len(),
                     obj.symbols.len()
@@ -156,7 +165,7 @@ impl App {
             Err(msg) => {
                 self.assembly = Assembly::Failed(msg.clone());
                 self.object = None;
-                self.note(format!("assembly error: {msg}"));
+                logger::line(format!("assembly error: {msg}"));
             }
         }
     }
@@ -196,9 +205,9 @@ impl App {
             KeyCode::Char('r') => self.reload(),
             KeyCode::Char('R') => {
                 self.core = processor::Core::new(0);
-                self.note("core reset");
+                logger::line("core reset");
             }
-            KeyCode::Char('s') => self.note("step: execution is not implemented yet"),
+            KeyCode::Char('s') => logger::line("step: execution is not implemented yet"),
 
             KeyCode::Char('j') | KeyCode::Down => self.scroll_focused(1),
             KeyCode::Char('k') | KeyCode::Up => self.scroll_focused(-1),
@@ -252,6 +261,9 @@ impl App {
     }
 
     fn scroll_focused(&mut self, delta: i32) {
+        // The Log panel scrolls back from the tail, so up/down are inverted:
+        // "up" means further into history, "down" means back toward live.
+        let delta = if self.focus == Panel::Log { -delta } else { delta };
         let max = self.max_scroll(self.focus) as i32;
         let i = self.focus.index();
         self.scroll[i] = (self.scroll[i] as i32 + delta).clamp(0, max) as u16;
@@ -265,19 +277,12 @@ impl App {
             Panel::Disasm => self.object.as_ref().map_or(0, |o| o.bytes.len() / 2 + 1),
             Panel::Registers => processor::REG_COUNT + 1,
             Panel::Memory => memory::MEM_SIZE / 16,
+            // Grows as the log grows, so the scroll range keeps up.
+            Panel::Log => logger::len(),
         };
         lines.saturating_sub(1).min(u16::MAX as usize) as u16
     }
 
-    // --- misc ---------------------------------------------------------
-
-    fn note(&mut self, msg: impl Into<String>) {
-        self.log.push(msg.into());
-        let overflow = self.log.len().saturating_sub(200);
-        if overflow > 0 {
-            self.log.drain(..overflow);
-        }
-    }
 }
 
 impl Default for App {

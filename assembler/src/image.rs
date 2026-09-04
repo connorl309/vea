@@ -2,7 +2,7 @@
 
 use crate::assemble::Object;
 
-/// 16 byte hexdump
+// 16 byte hexdump
 pub fn hexdump(obj: &Object) -> String {
     let mut out = String::new();
     for (row, chunk) in obj.bytes.chunks(16).enumerate() {
@@ -21,7 +21,7 @@ pub fn hexdump(obj: &Object) -> String {
     out
 }
 
-/// `address  label` lines, in address order.
+// `address  label` lines, in address order.
 pub fn symbols(obj: &Object) -> String {
     obj.symbols
         .iter()
