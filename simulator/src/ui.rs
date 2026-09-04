@@ -7,6 +7,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use crate::app::{App, Assembly, Panel};
+use crate::memory;
 use crate::processor::REG_COUNT;
 
 pub fn draw(frame: &mut Frame, app: &App) {
@@ -29,7 +30,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     status_bar(frame, rows[2], app);
 }
 
-/// A bordered block whose colour and title marker reflect focus.
+// A bordered block whose colour and title marker reflect focus.
 fn panel(title: &str, focused: bool) -> Block<'static> {
     let colour = if focused { Color::Cyan } else { Color::DarkGray };
     let marker = if focused { "▶ " } else { "  " };
@@ -115,7 +116,7 @@ fn disassembly(frame: &mut Frame, area: Rect, app: &App) {
 fn registers(frame: &mut Frame, area: Rect, app: &App) {
     let c = &app.core;
     let title = format!(
-        "Registers: pc={:#08x}{}",
+        "Registers: pc={:#016x}{}",
         c.pc,
         if c.halted { "  HALT" } else { "" }
     );
@@ -126,7 +127,10 @@ fn registers(frame: &mut Frame, area: Rect, app: &App) {
         let colour = if *v == 0 { Color::DarkGray } else { Color::White };
         lines.push(Line::from(vec![
             Span::styled(format!(" r{i:<2} "), Style::default().fg(Color::Yellow)),
-            Span::styled(format!("{v:#018x}"), Style::default().fg(colour)),
+            Span::styled(
+                format!("0x{:08x}_{:08x}", (v >> 32) as u32, *v as u32),
+                Style::default().fg(colour),
+            ),
         ]));
     }
 
@@ -137,8 +141,9 @@ fn registers(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn memory(frame: &mut Frame, area: Rect, app: &App) {
-    let m = &app.mem;
-    let title = format!("Memory: image {} B / {} B", m.image_len, m.bytes.len());
+    let bytes = memory::snapshot();
+    let image_len = memory::image_len();
+    let title = format!("Memory: image {} B / {} B", image_len, bytes.len());
     let block = panel(&title, app.focus == Panel::Memory);
 
     // The image is huge, so page it by hand rather than build every line.
@@ -148,20 +153,20 @@ fn memory(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines = Vec::with_capacity(visible);
     for row in start..start + visible {
         let base = row * 16;
-        if base >= m.bytes.len() {
+        if base >= bytes.len() {
             break;
         }
-        let chunk = &m.bytes[base..(base + 16).min(m.bytes.len())];
+        let chunk = &bytes[base..(base + 16).min(bytes.len())];
         let hex: String = chunk
             .iter()
             .enumerate()
-            .map(|(i, b)| if i == 8 { format!(" {b:02x}") } else { format!("{b:02x} ") })
+            .map(|(i, b)| if i == 8 { format!(" {b:02x} ") } else { format!("{b:02x} ") })
             .collect();
         let ascii: String = chunk
             .iter()
             .map(|b| if b.is_ascii_graphic() || *b == b' ' { *b as char } else { '.' })
             .collect();
-        let in_image = base < m.image_len;
+        let in_image = base < image_len;
         let body = if in_image { Color::White } else { Color::DarkGray };
         lines.push(Line::from(vec![
             Span::styled(

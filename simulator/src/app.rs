@@ -1,9 +1,6 @@
 // TUI application state and the main loop.
 //
-// This is the working front-end. It owns the simulated system for now (a
-// `processor::Core` and a `memory::Memory`), assembles source in-process via
-// the `asm` crate, and routes key events to panel navigation and actions.
-// It does not execute instructions yet.
+// This is the working front-end
 
 use std::io;
 use std::path::PathBuf;
@@ -12,11 +9,11 @@ use std::time::Duration;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use crate::memory::{self, Memory};
+use crate::memory;
 use crate::processor::{self, Core};
 use crate::ui;
 
-/// Panels that can hold keyboard focus, in Tab order.
+// Panels that can hold keyboard focus, in Tab order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
     Source,
@@ -48,14 +45,14 @@ impl Panel {
     }
 }
 
-/// Outcome of the most recent assemble, for the status bar.
+// Outcome of the most recent assemble, for the status bar.
 pub enum Assembly {
     None,
     Ok { bytes: usize, symbols: usize },
     Failed(String),
 }
 
-/// The bottom input line. Only used to type a path for `o`pen right now.
+// The bottom input line. Only used to type a path for `o`pen right now.
 pub struct Prompt {
     pub label: &'static str,
     pub buffer: String,
@@ -63,7 +60,6 @@ pub struct Prompt {
 
 pub struct App {
     pub core: Core,
-    pub mem: Memory,
 
     pub source_path: Option<PathBuf>,
     pub source: String,
@@ -71,7 +67,7 @@ pub struct App {
     pub assembly: Assembly,
 
     pub focus: Panel,
-    /// Vertical scroll offset per panel, indexed by `Panel::index`.
+    // Vertical scroll offset per panel, indexed by `Panel::index`.
     pub scroll: [u16; 4],
 
     pub log: Vec<String>,
@@ -83,11 +79,7 @@ pub struct App {
 impl App {
     pub fn new() -> Self {
         Self {
-            core: processor::RESET,
-            mem: Memory {
-                bytes: vec![0; memory::MEM_SIZE],
-                image_len: 0,
-            },
+            core: processor::Core::new(0),
             source_path: None,
             source: String::new(),
             object: None,
@@ -169,14 +161,11 @@ impl App {
         }
     }
 
-    /// Copy an assembled image to memory address 0 and clear the core.
-    /// (Lives here so the `memory` module stays function-free for now.)
+    // Load an assembled image into the shared memory at address 0 and reset
+    // the core.
     fn load_image(&mut self, image: &[u8]) {
-        self.mem.bytes.iter_mut().for_each(|b| *b = 0);
-        let n = image.len().min(self.mem.bytes.len());
-        self.mem.bytes[..n].copy_from_slice(&image[..n]);
-        self.mem.image_len = n;
-        self.core = processor::RESET;
+        memory::load_image(image);
+        self.core = processor::Core::new(0);
     }
 
     // --- input ----------------------------------------------------------
@@ -206,7 +195,7 @@ impl App {
             }
             KeyCode::Char('r') => self.reload(),
             KeyCode::Char('R') => {
-                self.core = processor::RESET;
+                self.core = processor::Core::new(0);
                 self.note("core reset");
             }
             KeyCode::Char('s') => self.note("step: execution is not implemented yet"),
@@ -268,14 +257,14 @@ impl App {
         self.scroll[i] = (self.scroll[i] as i32 + delta).clamp(0, max) as u16;
     }
 
-    /// Rough upper bound on the scroll offset for a panel, in lines. Overshoot
-    /// just shows blank space, so an estimate is fine.
+    // Rough upper bound on the scroll offset for a panel, in lines. Overshoot
+    // just shows blank space, so an estimate is fine.
     fn max_scroll(&self, panel: Panel) -> u16 {
         let lines = match panel {
             Panel::Source => self.source.lines().count(),
             Panel::Disasm => self.object.as_ref().map_or(0, |o| o.bytes.len() / 2 + 1),
             Panel::Registers => processor::REG_COUNT + 1,
-            Panel::Memory => self.mem.bytes.len() / 16,
+            Panel::Memory => memory::MEM_SIZE / 16,
         };
         lines.saturating_sub(1).min(u16::MAX as usize) as u16
     }
