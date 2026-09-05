@@ -6,13 +6,13 @@ use asm::isa::*;
 use crate::memory;
 use crate::pipeline::*;
 pub const REG_COUNT: usize = registers::COUNT as usize;
+const ICACHE_SIZE: usize = 16 * (asm::isa::framing::PLEN_MAX + 2);
 
 // The architectural register file.
 pub type RegFile = [u64; REG_COUNT];
+// The icache.
 
-// Actual execution unit, so this guy will implement basic high levels of each instruction.
-// *Currently* we will just execute everything in one "cycle" until I bother to actually rig
-// up the pipeline logic with the core state.
+// Actual execution unit tracking. Shares a lot of stuff with the pipeline module
 #[derive(Debug, Clone)]
 pub struct Core {
     // r0..r{REG_COUNT-1}.
