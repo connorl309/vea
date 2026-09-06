@@ -9,7 +9,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use crate::app::{App, Assembly, Panel};
 use crate::logger;
 use crate::memory;
-use crate::processor::REG_COUNT;
+use crate::processor::{CoreState, REG_COUNT};
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let rows = Layout::vertical([
@@ -116,14 +116,25 @@ fn disassembly(frame: &mut Frame, area: Rect, app: &App) {
 
 fn registers(frame: &mut Frame, area: Rect, app: &App) {
     let c = &app.core;
-    let title = format!(
-        "Registers: pc={:#016x}{}",
-        c.pc,
-        if c.halted { "  HALT" } else { "" }
-    );
+    let state = match &c.state {
+        CoreState::Running(_) => "running".to_string(),
+        CoreState::Stopped => "stopped".to_string(),
+        CoreState::Exception(t) => format!("trap {t:?}"),
+    };
+    let title = format!("Registers: pc={:#08x}  {state}", c.pc);
 
-    let mut lines = Vec::with_capacity(REG_COUNT + 1);
-    lines.push(Line::from(dim(format!("  retired {}", c.retired))));
+    let mut lines = Vec::with_capacity(REG_COUNT + 6);
+    lines.push(Line::from(dim(format!(
+        "  cycle {}   retired {}{}",
+        c.cycles,
+        c.retired,
+        if c.halted { "   HALT" } else { "" },
+    ))));
+    // The pipeline latches, IF -> ID -> EX (MEM/WB not built yet).
+    for tag in c.pipeline_debug() {
+        lines.push(Line::from(dim(format!("  {tag}"))));
+    }
+    lines.push(Line::from(""));
     for (i, v) in c.regs.registers.iter().enumerate() {
         let colour = if *v == 0 { Color::DarkGray } else { Color::White };
         lines.push(Line::from(vec![
@@ -236,14 +247,18 @@ fn status_bar(frame: &mut Frame, area: Rect, app: &App) {
         ),
     };
 
-    let keys = "  [Tab] focus  [o]pen  [r]eload  [s]tep  [R]eset  [j/k] scroll  [q]uit";
+    let keys = "  [Tab] focus  [o]pen  [r]eload  [s]tep  [S]tep-10  [R]eset  [j/k] scroll  [q]uit";
+    let tail = match &app.notice {
+        Some(n) => Span::styled(format!("  {n}"), Style::default().fg(Color::Yellow)),
+        None => dim(keys),
+    };
     let line = Line::from(vec![
         Span::styled(label, style),
         Span::styled(
             format!(" {} ", app.focus.title()),
             Style::default().bg(Color::DarkGray).fg(Color::White),
         ),
-        dim(keys),
+        tail,
     ]);
     frame.render_widget(Paragraph::new(line), area);
 }

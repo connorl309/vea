@@ -82,6 +82,9 @@ pub struct App {
 
     pub prompt: Option<Prompt>,
 
+    // Last thing `step` did. Shown in the status bar; the log has the detail.
+    pub notice: Option<String>,
+
     quit: bool,
 }
 
@@ -97,6 +100,7 @@ impl App {
             focus: Panel::Source,
             scroll: [0; 5],
             prompt: None,
+            notice: None,
             quit: false,
         }
     }
@@ -104,6 +108,12 @@ impl App {
     // --- lifecycle ---------------------------------------------------------
 
     pub fn run(mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
+        // The unbuilt EX stubs bail with todo!(). Keep that panic text off the
+        // terminal and in the log; `step` catches the unwind and carries on.
+        std::panic::set_hook(Box::new(|info| {
+            logger::line(format!("sim panic: {info}"));
+        }));
+
         let mut redraw = true;
         while !self.quit {
             if redraw {
@@ -175,6 +185,29 @@ impl App {
     fn load_image(&mut self, image: &[u8]) {
         memory::load_image(image);
         self.core = processor::Core::new(0);
+        self.notice = None;
+    }
+
+    // --- execution -----------------------------------------------------
+
+    // Advance the pipeline by `cycles` clock cycles. `execute` still ends in a
+    // todo!() for every real opcode, so we run it under `catch_unwind` and turn
+    // the unwind into a log line + status notice instead of a torn-down TUI.
+    fn step(&mut self, cycles: usize) {
+        if self.object.is_none() {
+            self.notice = Some("nothing to step - assemble a program first".into());
+            return;
+        }
+
+        logger::line(format!("── step {cycles} ──"));
+        let outcome =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.core.step(cycles)));
+
+        self.notice = Some(match outcome {
+            Ok(Ok(n)) => format!("ran to cycle {n}  (pc {:#06x})", self.core.pc),
+            Ok(Err(trap)) => format!("trap: {trap:?}"),
+            Err(_) => "EX not implemented - hit a todo! (see log)".into(),
+        });
     }
 
     // --- input ----------------------------------------------------------
@@ -205,9 +238,11 @@ impl App {
             KeyCode::Char('r') => self.reload(),
             KeyCode::Char('R') => {
                 self.core = processor::Core::new(0);
+                self.notice = Some("core reset".into());
                 logger::line("core reset");
             }
-            KeyCode::Char('s') => logger::line("step: execution is not implemented yet"),
+            KeyCode::Char('s') => self.step(1),
+            KeyCode::Char('S') => self.step(10),
 
             KeyCode::Char('j') | KeyCode::Down => self.scroll_focused(1),
             KeyCode::Char('k') | KeyCode::Up => self.scroll_focused(-1),
