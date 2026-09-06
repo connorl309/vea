@@ -22,7 +22,7 @@ pub enum MemOp {
 // `0xABCD` arrives as `0xABCD`, not `0xABCD00_00000000`. It is intentionally
 // NOT sign/zero-extended here - EX does that per-op, keying off `imm_width`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct IdExWbLatch {
+pub struct IdExLatch {
     pub valid: bool,
     pub pc: u64,
     pub instr: &'static InstrDef,
@@ -34,17 +34,19 @@ pub struct IdExWbLatch {
     pub mem_op: Option<MemOp>,
 }
 
-impl IdExWbLatch {
+impl IdExLatch {
     pub fn as_reset() -> Self {
-        IdExWbLatch { valid: false, pc: 0, instr: &INSTRUCTIONS[0], rd: None, rs1: None, rs2: None, imm_raw: 0, imm_width: 0, mem_op: None }
+        IdExLatch { valid: false, pc: 0, instr: &INSTRUCTIONS[0], rd: None, rs1: None, rs2: None, imm_raw: 0, imm_width: 0, mem_op: None }
     }
 }
 
 impl Core {
     // Decode one IF/ID latch into an ID/EX latch
-    pub fn decode(&self, latch: &IfIdLatch) -> Result<IdExWbLatch, Trap> {
-        if !latch.valid {
-            return Ok(IdExWbLatch::as_reset());
+    pub fn decode(&self, latch: &IfIdLatch) -> Result<IdExLatch, Trap> {
+        // A bubble from fetch means decode should not update anything internally,
+        // we will just broadcast the previous cycle's result
+        if !latch.valid || self.stall_decode {
+            return Ok(self.idex.clone());
         }
 
         let opcode = latch.bytes[0];
@@ -93,7 +95,7 @@ impl Core {
 
         let mem_op = (instr.form == Form::RMem).then(|| if rd.is_some() { MemOp::Load } else { MemOp::Store });
 
-        Ok(IdExWbLatch {
+        Ok(IdExLatch {
             valid: true,
             pc: latch.pc,
             instr: instr,

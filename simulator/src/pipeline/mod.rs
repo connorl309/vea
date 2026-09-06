@@ -8,6 +8,7 @@
 pub mod decode;
 pub mod fetch;
 pub mod execute;
+pub mod writeback;
 
 pub use decode::*;
 pub use fetch::*;

@@ -23,7 +23,7 @@ pub struct ExWbLatch {
 }
 
 /**
- * Decode is responsible for taking the input IdExWbLatch structure
+ * Execute is responsible for taking the input IdExLatch structure
  * and actually working on executing the "stuff" needed to do here.
  * For anything register-register we can mostly accomplish it in
  * one shot here, excepting memory operations.
@@ -37,15 +37,15 @@ pub struct ExWbLatch {
  *
  */
 impl Core {
-    pub fn execute(&mut self, idex: &IdExWbLatch) -> Result<ExWbLatch, Trap> {
-        // `stall_execute` is a combinational output of this stage. A memory op
-        // still mid-access re-asserts it below; every other path leaves it low.
-        self.stall_execute = false;
-
-        // A bubble in EX does nothing, and latches should
-        // not update.
+    pub fn execute(&mut self, idex: &IdExLatch) -> Result<ExWbLatch, Trap> {
+        // A bubble from decode: EX has no instruction, so drive a bubble into
+        // WB (nothing to write back). `ExWbLatch` has no valid bit, so a bubble
+        // must be a fresh empty latch - re-broadcasting `self.exwb` would make
+        // WB re-apply whatever the last completed instruction wrote. EX isn't
+        // the stalling stage here, so drop `stall_execute` (as fetch clears
+        // `stall_fetch` on its non-stall path).
         if !idex.valid {
-            let mut default = ExWbLatch::default();
+            self.stall_execute = false;
             return Ok(ExWbLatch::default());
         }
 
@@ -86,7 +86,7 @@ impl Core {
     }
 
     // nop does nothing; halt stops the machine.
-    fn exec_system(&mut self, idex: &IdExWbLatch) -> Result<ExWbLatch, Trap> {
+    fn exec_system(&mut self, idex: &IdExLatch) -> Result<ExWbLatch, Trap> {
         let _ = idex;
         if idex.instr.opcode == 0xFF {
             self.halted = true;
@@ -98,7 +98,7 @@ impl Core {
     // rd = rs (mov) or rd = imm (movi). `movi` is Form::RI - no source
     // register - so only `rd` is required here; decode already rejects a `mov`
     // frame that is missing its source operand (plen < reg_count).
-    fn exec_move(&mut self, idex: &IdExWbLatch) -> Result<ExWbLatch, Trap> {
+    fn exec_move(&mut self, idex: &IdExLatch) -> Result<ExWbLatch, Trap> {
         let Some(rd) = idex.rd else {
             return Err(Trap::MalformedInstruction { pc: idex.pc });
         };
@@ -118,7 +118,7 @@ impl Core {
 
     // rd = rs1 OP rs2, or rd = rs1 OP imm for the -i forms (same opcode, with
     // FLAG_IMM set). The ALU works at the full 64-bit register width.
-    fn exec_alu(&mut self, idex: &IdExWbLatch) -> Result<ExWbLatch, Trap> {
+    fn exec_alu(&mut self, idex: &IdExLatch) -> Result<ExWbLatch, Trap> {
         let value_a: u64 = self.read_reg(idex.rs1, idex.pc)?;
         // Second operand: rs2, or the instruction's immediate for a -i form.
         let value_b: u64 = if idex.instr.flags & FLAG_IMM != 0 {
@@ -151,7 +151,7 @@ impl Core {
     // rd = (rs1 OP rs2) ? 1 : 0, or rd = (rs1 OP imm) ? 1 : 0 for the -i forms.
     // The -i forms share the opcode; pick the second operand off `FLAG_IMM`
     // (`idex.instr.flags & asm::isa::FLAG_IMM`), same idea as exec_alu.
-    fn exec_set_predicate(&mut self, idex: &IdExWbLatch) -> Result<ExWbLatch, Trap> {
+    fn exec_set_predicate(&mut self, idex: &IdExLatch) -> Result<ExWbLatch, Trap> {
 
         todo!("slt/sltu/seq/sne/sle/sleu/sge/sgeu (+ slti/... -i forms)")
     }
@@ -159,14 +159,14 @@ impl Core {
     // Register form: if (rs1 OP rs2) pc = imm (the branch target / label).
     // -i form (FLAG_IMM set): if (rs1 OP imm) pc = rs2, i.e. the comparand is
     // the immediate and rs2 holds the target address.
-    fn exec_branch(&mut self, idex: &IdExWbLatch) -> Result<ExWbLatch, Trap> {
+    fn exec_branch(&mut self, idex: &IdExLatch) -> Result<ExWbLatch, Trap> {
 
         todo!("beq/bne/blt/bltu/bge/bgeu (+ beqi/... -i forms)")
     }
 
     // jmp/call carry the target in the immediate; jr/callr take it in a
     // register; ret pops it off the return-address stack.
-    fn exec_jump(&mut self, idex: &IdExWbLatch) -> Result<ExWbLatch, Trap> {
+    fn exec_jump(&mut self, idex: &IdExLatch) -> Result<ExWbLatch, Trap> {
 
         todo!("jmp/jr/call/callr/ret")
     }
@@ -174,7 +174,7 @@ impl Core {
     // rd = mem[rb + disp], sign- or zero-extended per the flags nibble. The
     // access is held for a fixed latency first (see `mem_access_tick`); only the
     // data path below is still a stub.
-    fn exec_load(&mut self, idex: &IdExWbLatch) -> Result<ExWbLatch, Trap> {
+    fn exec_load(&mut self, idex: &IdExLatch) -> Result<ExWbLatch, Trap> {
         if self.mem_access_tick().is_none() {
             return Ok(ExWbLatch::default());
         }
@@ -183,7 +183,7 @@ impl Core {
     }
 
     // mem[rb + disp] = rs & store_width_mask
-    fn exec_store(&mut self, idex: &IdExWbLatch) -> Result<ExWbLatch, Trap> {
+    fn exec_store(&mut self, idex: &IdExLatch) -> Result<ExWbLatch, Trap> {
         if self.mem_access_tick().is_none() {
             return Ok(ExWbLatch::default());
         }
@@ -191,10 +191,8 @@ impl Core {
         todo!("st/stw/sth/stb")
     }
 
-    // Advance the fixed memory-access latency for the load/store currently in
-    // EX. Returns `None` on a stall cycle - EX drives a bubble to WB and, via
-    // `stall_execute`, the front of the pipe (IF/ID, ID/EX, PC) holds - and
-    // `Some(())` on the cycle the access should actually be performed.
+    // Advance the fixed memory-access latency for the load/store delay currently in
+    // EX.
     fn mem_access_tick(&mut self) -> Option<()> {
         let remaining = self
             .ex_pending
@@ -205,6 +203,7 @@ impl Core {
             return None;
         }
         self.ex_pending = None;
+        self.stall_execute = false;
         Some(())
     }
 }

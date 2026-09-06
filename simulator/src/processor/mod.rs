@@ -59,9 +59,9 @@ pub struct Core {
     breakpoints: HashMap<String, u64>,
     // TODO: return-address stack / link register for call/rets
 
-    ifid: IfIdLatch,
-    idex: IdExWbLatch,
-    ex: ExWbLatch,
+    pub ifid: IfIdLatch,
+    pub idex: IdExLatch,
+    pub exwb: ExWbLatch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,8 +104,8 @@ impl Core {
             ex_pending: None,
             breakpoints: HashMap::new(),
             ifid: IfIdLatch::default(),
-            idex: IdExWbLatch::as_reset(),
-            ex: ExWbLatch::default(),
+            idex: IdExLatch::as_reset(),
+            exwb: ExWbLatch::default(),
         }
     }
 
@@ -167,7 +167,7 @@ impl Core {
         };
         let ex = match self.ex_pending {
             Some(n) => format!("EX  (mem access, {n} stall cycle(s) left)"),
-            None => format!("EX  {:?}", self.ex),
+            None => format!("EX  {:?}", self.exwb),
         };
         [ifid, idex, ex]
     }
@@ -210,7 +210,7 @@ impl Core {
         // holds - ID/EX keeps the same instruction so it re-enters EX next
         // cycle - and only the EX latch advances (a bubble toward WB).
         let ex = self.execute(&idex_in)?;
-        self.ex = ex;
+        self.exwb = ex;
 
         if !self.stall_execute {
             // ID: decode the IF/ID latch from last cycle.
