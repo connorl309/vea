@@ -100,14 +100,15 @@ mod tests {
 
     #[test]
     fn addi_hand_check() {
-        // addi r1, r0, 0x100  ->  20 40 01 00 01 00
-        assert_eq!(asm("addi r1, r0, 0x100"), vec![0x20, 0x40, 0x01, 0x00, 0x01, 0x00]);
+        // addi shares `add`'s opcode 0x10 with FLAG_IMM in the flags nibble.
+        // addi r1, r0, 0x100  ->  10 41 01 00 01 00
+        assert_eq!(asm("addi r1, r0, 0x100"), vec![0x10, 0x41, 0x01, 0x00, 0x01, 0x00]);
     }
 
     #[test]
     fn immediate_width_follows_value() {
-        assert_eq!(asm("addi r1, r0, 5"), vec![0x20, 0x30, 0x01, 0x00, 0x05]);
-        assert_eq!(asm("addi r1, r0, 0"), vec![0x20, 0x20, 0x01, 0x00]);
+        assert_eq!(asm("addi r1, r0, 5"), vec![0x10, 0x31, 0x01, 0x00, 0x05]);
+        assert_eq!(asm("addi r1, r0, 0"), vec![0x10, 0x21, 0x01, 0x00]);
     }
 
     #[test]

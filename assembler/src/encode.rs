@@ -158,6 +158,25 @@ mod tests {
     }
 
     #[test]
+    fn immediate_setif_and_branch_forms() {
+        // slti r1, r2, 5  ->  30 31 01 02 05   (opcode 0x30, plen=3, FLAG_IMM)
+        let e = build(&Instr {
+            mnemonic: "slti".into(),
+            operands: vec![Operand::Reg(1), Operand::Reg(2), Operand::Int(5)],
+        })
+        .unwrap();
+        assert_eq!(e.bytes, vec![0x30, 0x31, 0x01, 0x02, 0x05]);
+
+        // beqi r3, r4, 0  ->  40 21 03 04   (rs=r3, rt=r4, zero-width comparand)
+        let e = build(&Instr {
+            mnemonic: "beqi".into(),
+            operands: vec![Operand::Reg(3), Operand::Reg(4), Operand::Int(0)],
+        })
+        .unwrap();
+        assert_eq!(e.bytes, vec![0x40, 0x21, 0x03, 0x04]);
+    }
+
+    #[test]
     fn label_ref_reserves_eight_bytes() {
         let e = build(&Instr {
             mnemonic: "jmp".into(),

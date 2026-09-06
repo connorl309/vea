@@ -60,8 +60,8 @@ pub struct Core {
     // TODO: return-address stack / link register for call/rets
 
     ifid: IfIdLatch,
-    idex: IdExLatch,
-    ex: ExLatch,
+    idex: IdExWbLatch,
+    ex: ExWbLatch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,8 +104,25 @@ impl Core {
             ex_pending: None,
             breakpoints: HashMap::new(),
             ifid: IfIdLatch::default(),
-            idex: IdExLatch::as_reset(),
-            ex: ExLatch::default(),
+            idex: IdExWbLatch::as_reset(),
+            ex: ExWbLatch::default(),
+        }
+    }
+
+    /**
+     *      DATAPATH HELPERS
+     *
+     * Small combinational pieces the pipeline stages share.
+     */
+
+    // Read a register selected by a decoded instruction port. A selector past
+    // the end of the file - or a `None` port EX expected to be populated -
+    // means a malformed frame reached execute; decode masks selectors to 5
+    // bits, so with a full 32-entry file this is a defensive check only.
+    pub fn read_reg(&self, sel: Option<u8>, pc: u64) -> Result<u64, Trap> {
+        match sel {
+            Some(i) if (i as usize) < REG_COUNT => Ok(self.regs.read_port(sel)),
+            _ => Err(Trap::MalformedInstruction { pc }),
         }
     }
 

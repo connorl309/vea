@@ -7,7 +7,7 @@ pub mod opcodes;
 pub mod registers;
 
 pub use format::Form;
-pub use opcodes::{INSTRUCTIONS, InstrDef};
+pub use opcodes::{FLAG_IMM, INSTRUCTIONS, InstrDef};
 
 // One-line-per-instruction dump for `asm --list-isa`.
 pub fn listing() -> String {

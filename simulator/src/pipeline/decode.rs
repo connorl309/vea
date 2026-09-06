@@ -22,7 +22,7 @@ pub enum MemOp {
 // `0xABCD` arrives as `0xABCD`, not `0xABCD00_00000000`. It is intentionally
 // NOT sign/zero-extended here - EX does that per-op, keying off `imm_width`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct IdExLatch {
+pub struct IdExWbLatch {
     pub valid: bool,
     pub pc: u64,
     pub instr: &'static InstrDef,
@@ -34,17 +34,17 @@ pub struct IdExLatch {
     pub mem_op: Option<MemOp>,
 }
 
-impl IdExLatch {
+impl IdExWbLatch {
     pub fn as_reset() -> Self {
-        IdExLatch { valid: false, pc: 0, instr: &INSTRUCTIONS[0], rd: None, rs1: None, rs2: None, imm_raw: 0, imm_width: 0, mem_op: None }
+        IdExWbLatch { valid: false, pc: 0, instr: &INSTRUCTIONS[0], rd: None, rs1: None, rs2: None, imm_raw: 0, imm_width: 0, mem_op: None }
     }
 }
 
 impl Core {
     // Decode one IF/ID latch into an ID/EX latch
-    pub fn decode(&self, latch: &IfIdLatch) -> Result<IdExLatch, Trap> {
+    pub fn decode(&self, latch: &IfIdLatch) -> Result<IdExWbLatch, Trap> {
         if !latch.valid {
-            return Ok(IdExLatch::as_reset());
+            return Ok(IdExWbLatch::as_reset());
         }
 
         let opcode = latch.bytes[0];
@@ -56,9 +56,12 @@ impl Core {
             return Err(Trap::MalformedInstruction { pc: latch.pc });
         }
 
-        // Real immediate width
+        // Real immediate width. A form that carries an immediate is allowed a
+        // zero-width one - a literal `0` (or a `#0` displacement) encodes to no
+        // payload bytes - so only the other direction, trailing bytes on a form
+        // with no immediate, is malformed.
         let imm_width = plen as usize - reg_count;
-        if (imm_width > 0) != instr.form.has_imm() || !matches!(imm_width, 0 | 1 | 2 | 4 | 8) {
+        if (imm_width > 0 && !instr.form.has_imm()) || !matches!(imm_width, 0 | 1 | 2 | 4 | 8) {
             return Err(Trap::MalformedInstruction { pc: latch.pc });
         }
 
@@ -90,7 +93,7 @@ impl Core {
 
         let mem_op = (instr.form == Form::RMem).then(|| if rd.is_some() { MemOp::Load } else { MemOp::Store });
 
-        Ok(IdExLatch {
+        Ok(IdExWbLatch {
             valid: true,
             pc: latch.pc,
             instr: instr,
@@ -101,5 +104,49 @@ impl Core {
             imm_width: imm_width as u8,
             mem_op,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn latch(bytes: &[u8]) -> IfIdLatch {
+        let mut buf = [0u8; 2 + framing::PLEN_MAX];
+        buf[..bytes.len()].copy_from_slice(bytes);
+        IfIdLatch { valid: true, pc: 0, bytes: buf }
+    }
+
+    #[test]
+    fn zero_width_immediate_is_not_malformed() {
+        // addi r1, r0, 0  ->  10 21 01 00   (RRI + FLAG_IMM, plen=2, no imm bytes)
+        let idex = Core::new(0).decode(&latch(&[0x10, 0x21, 0x01, 0x00])).expect("decodes");
+        assert_eq!(idex.instr.mnemonic, "addi");
+        assert_eq!((idex.imm_raw, idex.imm_width), (0, 0));
+    }
+
+    #[test]
+    fn immediate_setif_decodes_dest_and_source() {
+        // slti r1, r2, 5  ->  30 31 01 02 05
+        let idex = Core::new(0).decode(&latch(&[0x30, 0x31, 0x01, 0x02, 0x05])).expect("decodes");
+        assert_eq!(idex.instr.mnemonic, "slti");
+        assert_eq!((idex.rd, idex.rs1, idex.rs2), (Some(1), Some(2), None));
+        assert_eq!((idex.imm_raw, idex.imm_width), (5, 1));
+    }
+
+    #[test]
+    fn immediate_branch_reads_both_register_slots() {
+        // beqi r3, r4, 7  ->  40 31 03 04 07   (rs in slot 0, target rt in slot 1)
+        let idex = Core::new(0).decode(&latch(&[0x40, 0x31, 0x03, 0x04, 0x07])).expect("decodes");
+        assert_eq!(idex.instr.mnemonic, "beqi");
+        assert_eq!((idex.rd, idex.rs1, idex.rs2), (None, Some(3), Some(4)));
+        assert_eq!((idex.imm_raw, idex.imm_width), (7, 1));
+    }
+
+    #[test]
+    fn trailing_bytes_on_a_no_immediate_form_are_malformed() {
+        // nop (Form::Nullary) with a stray payload byte: plen=1, reg_count=0
+        let err = Core::new(0).decode(&latch(&[0x00, 0x10, 0xAA])).unwrap_err();
+        assert!(matches!(err, Trap::MalformedInstruction { .. }));
     }
 }
