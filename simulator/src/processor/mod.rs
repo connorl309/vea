@@ -15,12 +15,25 @@ const ICACHE: [u8; ICACHE_SIZE] = [0u8; ICACHE_SIZE];
 pub struct RegisterFile {
     // The actual bank of registers enumerated 0..REG_COUNT
     pub registers: [u64; REG_COUNT],
-    // We support 2 read ports/1 write port to the regfile.
+    // We support 3 read ports/1 write port to the regfile.
     // There are implicit transport lanes coming from the register
     // file control logic for write data input/read data outputs.
     pub write_port_config: Option<(u8, u64)>, // write(reg, val)
+    pub read_rd_port_config: Option<u8>,
     pub read_rs1_port_config: Option<u8>,
     pub read_rs2_port_config: Option<u8>,
+}
+
+impl RegisterFile {
+    // Combinational read: drive a port with a register index and the value
+    // drops out the same cycle. An unconfigured port (`None`) settles to zero,
+    // same as the read mux would with nothing selected.
+    pub fn read_port(&self, sel: Option<u8>) -> u64 {
+        match sel {
+            Some(i) => self.registers[i as usize],
+            None => 0,
+        }
+    }
 }
 
 // Actual execution unit tracking. Shares a lot of stuff with the pipeline module

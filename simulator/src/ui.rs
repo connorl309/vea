@@ -124,7 +124,7 @@ fn registers(frame: &mut Frame, area: Rect, app: &App) {
 
     let mut lines = Vec::with_capacity(REG_COUNT + 1);
     lines.push(Line::from(dim(format!("  retired {}", c.retired))));
-    for (i, v) in c.regs.iter().enumerate() {
+    for (i, v) in c.regs.registers.iter().enumerate() {
         let colour = if *v == 0 { Color::DarkGray } else { Color::White };
         lines.push(Line::from(vec![
             Span::styled(format!(" r{i:<2} "), Style::default().fg(Color::Yellow)),

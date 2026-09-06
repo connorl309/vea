@@ -6,9 +6,10 @@
 // is never declared - it's inferred from the value (see `encode::min_width`).
 
 // The syntactic shape of an instruction's operands.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Form {
     // `op`
+    #[default]
     Nullary,
     // `op rd`
     R,
