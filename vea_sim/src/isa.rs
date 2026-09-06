@@ -5,12 +5,39 @@
  * about the ISA that may be useful in other code locations.
  */
 
+// To what byte-alignment is every instruction?
+// For now, it is 8 byte aligned, so every fetch
+// will PC = (PC + plen) rounded up to the next multiple of 8.
+pub const ALIGNMENT: u64 = 0x8;
 // How many registers does Vea support?
 pub const NUM_REGS: usize = 32;
 // Arbitrary constant identifying the PC register which
 // is not typically exposed anywhere.
 pub const PC_REG: usize = NUM_REGS + 1;
+// What is a register in Vea? (wrapper around a u8...)
 pub struct VeaReg(u8);
+// What are our condition codes?
+pub struct ConditionCodes {
+    data: u8
+}
+
+// How large is the i- and d-cache?
+// TODO: Sim modeling for caches
+pub const ICACHE_SIZE: usize = usize::MIN;
+pub const DCACHE_SIZE: usize = usize::MIN;
+
+// How many cycles will modeled (fake) memory
+// stall for in sim?
+pub const MEM_READ_DELAY: u64 = 3;
+pub const MEM_WRITE_DELAY: u64 = 3;
+
+/*
+==========================================================
+
+    IMPLEMENTATIONS
+
+==========================================================
+*/
 impl VeaReg {
     pub fn is_valid(&self) -> bool {
         self.0 < NUM_REGS as u8 || self.0 == PC_REG as u8
@@ -25,14 +52,21 @@ impl VeaReg {
     pub fn idx(&self) -> usize { self.0 as usize }
 }
 
-// How large is the i- and d-cache?
-// TODO: Sim modeling for caches
-pub const ICACHE_SIZE: usize = usize::MIN;
-pub const DCACHE_SIZE: usize = usize::MIN;
+// Condition Codes
+impl ConditionCodes {
+    pub const ZERO_MASK: u8 = 0b1000;
+    pub const NEG_MASK: u8 = 0b0100;
+    pub const CARRY_MASK: u8 = 0b0010;
+    pub const OVERFLOW_MASK: u8 = 0b0001;
 
-// How many cycles will modeled (fake) memory
-// stall for in sim?
-pub const MEM_READ_DELAY: u64 = 3;
-pub const MEM_WRITE_DELAY: u64 = 3;
-
-// 
+    pub fn new(masks: u8) -> Self {
+        if masks > 0xF {
+            panic!("Input condition code mask has undefined bits set!");
+        } else {
+            ConditionCodes { data: masks }
+        }
+    }
+    pub fn reset() -> Self {
+        ConditionCodes { data: 0 }
+    }
+}
