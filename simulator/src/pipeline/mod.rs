@@ -7,6 +7,8 @@
 
 pub mod decode;
 pub mod fetch;
+pub mod execute;
 
-pub use decode::{IdExLatch, MemOp};
-pub use fetch::IfIdLatch;
+pub use decode::*;
+pub use fetch::*;
+pub use execute::*;

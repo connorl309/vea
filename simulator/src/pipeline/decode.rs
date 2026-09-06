@@ -13,7 +13,7 @@ pub enum MemOp {
     Store,
 }
 
-// ID/EX latch. These are the actual control-signal wires Execute needs.
+// ID/EX latch.
 // `rd`/`rs1`/`rs2` are the (up to) one
 // write-port and two read-port register indices a real regfile would be
 // driven with this cycle (`None` = that port's valid bit is low). The
@@ -33,7 +33,7 @@ pub struct IdExLatch {
     pub mem_op: Option<MemOp>,
 }
 
-// Decode one IF/ID latch into an ID/EX latch. A bubble in -> a bubble out.
+// Decode one IF/ID latch into an ID/EX latch
 pub fn decode(latch: &IfIdLatch) -> Result<IdExLatch, Trap> {
     if !latch.valid {
         return Ok(IdExLatch::default());

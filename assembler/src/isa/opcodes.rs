@@ -5,12 +5,15 @@
 //   opcode    the opcode byte
 //   form      operand shape (isa/format.rs) - also says if there's an immediate
 //   flags     the FLAGS nibble to emit; lets `ldb` / `ldbu` share an opcode
-//   writes    which payload register slot (0-based, source order) the result
+//   writes    which payload operand slot (0-based, source order) the result
 //             is written back to, or None if this instruction writes no
 //             register. Every other populated slot is implicitly a read.
-//             There's no instruction here that both reads and writes the
-//             same slot, so this one fact is enough to derive rd/rs1/rs2
-//             read/write control signals for the whole table.
+//             No instruction has a single slot that is both a source and a
+//             destination in the encoding (there's no x86-style `add rd, rs`
+//             here - the destination always gets its own slot), so this one
+//             fact is enough to derive the per-slot read/write control
+//             signals for the whole table. Naming the same register in
+//             several slots (`add r3, r3, r3`) is of course still allowed.
 //   summary   brief description
 //
 // Immediate width is not declared here; it's inferred from the value.
