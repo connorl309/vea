@@ -130,7 +130,7 @@ fn registers(frame: &mut Frame, area: Rect, app: &App) {
         c.retired,
         if c.halted { "   HALT" } else { "" },
     ))));
-    // The pipeline latches, IF -> ID -> EX (MEM/WB not built yet).
+    // The pipeline latches, IF -> ID -> EX -> WB (WB not built yet).
     for tag in c.pipeline_debug() {
         lines.push(Line::from(dim(format!("  {tag}"))));
     }

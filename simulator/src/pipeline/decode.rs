@@ -16,10 +16,11 @@ pub enum MemOp {
 // ID/EX latch.
 // `rd`/`rs1`/`rs2` are the (up to) one
 // write-port and two read-port register indices a real regfile would be
-// driven with this cycle (`None` = that port's valid bit is low). The
-// immediate is intentionally NOT sign/zero-extended here. The ALU will
-// perform all ops at 64 bit sizes then mask off the result as specified
-// by plen.
+// driven with this cycle (`None` = that port's valid bit is low).
+// `imm_raw` is the instruction's immediate as a plain host u64: its
+// `imm_width` payload bytes read big-endian and right-aligned, so a 2-byte
+// `0xABCD` arrives as `0xABCD`, not `0xABCD00_00000000`. It is intentionally
+// NOT sign/zero-extended here - EX does that per-op, keying off `imm_width`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IdExLatch {
     pub valid: bool,
@@ -75,13 +76,17 @@ impl Core {
         }
         let rd = instr.writes.map(|w| latch.bytes[2 + w as usize] & framing::REG_INDEX_MASK);
 
-        // Immediates always load a fixed 8-byte big-endian window starting right
-        // after the registers, regardless of imm_width.
-        // `reg_count` maxes out at 3 (Form::RRR) and `latch.bytes` is a
-        // fixed 17-byte buffer, so this window is always in bounds even though
-        // it may read past this instruction's real payload into whatever the
-        // icache has next.
-        let window: &[u8; 8] = latch.bytes[2 + reg_count..2 + reg_count + 8].try_into().unwrap();
+        // Immediate: exactly the `imm_width` payload bytes (0/1/2/4/8), which sit
+        // right after the register bytes, read big-endian and right-aligned into
+        // a u64. Only the real payload is touched - nothing is pulled in from the
+        // next frame - and the host sees the plain numeric value. `imm_width` is
+        // carried alongside for EX to sign/zero-extend.
+        // Bounds: `imm_start + imm_width == 2 + plen`, and plen is a 4-bit field
+        // (<= 15), so this never runs past the 17-byte frame buffer.
+        let imm_start = 2 + reg_count;
+        let mut imm_bytes = [0u8; 8];
+        imm_bytes[8 - imm_width..].copy_from_slice(&latch.bytes[imm_start..imm_start + imm_width]);
+        let imm_raw = u64::from_be_bytes(imm_bytes);
 
         let mem_op = (instr.form == Form::RMem).then(|| if rd.is_some() { MemOp::Load } else { MemOp::Store });
 
@@ -92,7 +97,7 @@ impl Core {
             rd,
             rs1: reads[0],
             rs2: reads[1],
-            imm_raw: u64::from_be_bytes(*window),
+            imm_raw,
             imm_width: imm_width as u8,
             mem_op,
         })

@@ -16,13 +16,6 @@ const ICACHE: [u8; ICACHE_SIZE] = [0u8; ICACHE_SIZE];
 pub struct RegisterFile {
     // The actual bank of registers enumerated 0..REG_COUNT
     pub registers: [u64; REG_COUNT],
-    // We support 3 read ports/1 write port to the regfile.
-    // There are implicit transport lanes coming from the register
-    // file control logic for write data input/read data outputs.
-    pub write_port_config: Option<(u8, u64)>, // write(reg, val)
-    pub read_rd_port_config: Option<u8>,
-    pub read_rs1_port_config: Option<u8>,
-    pub read_rs2_port_config: Option<u8>,
 }
 
 impl RegisterFile {
@@ -52,13 +45,23 @@ pub struct Core {
     pub cycles: u64,
     // Current core state
     pub state: CoreState,
+    // Per-stage stall signals for the current cycle, recomputed every `cycle`.
+    // A stalled stage does not latch a fresh result from its input and the
+    // stage ahead of it sees a bubble.
+    pub stall_fetch: bool,
+    pub stall_decode: bool,
+    pub stall_execute: bool,
+    // EX-internal sequential state for a multi-cycle op: `Some(n)` = the op in
+    // EX still needs `n` stall cycles before its work cycle, `None` = EX is
+    // combinational this cycle.
+    pub ex_pending: Option<u32>,
     // DEBUG: breakpoints; list of (PC, name)
     breakpoints: HashMap<String, u64>,
     // TODO: return-address stack / link register for call/rets
 
     ifid: IfIdLatch,
     idex: IdExLatch,
-    exmem: ExMemLatch,
+    ex: ExLatch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +88,7 @@ pub enum Trap {
 }
 
 impl Core {
+
     // Create a new core object. Will evolve over time.
     pub fn new(pc: u64) -> Self {
         Core {
@@ -94,10 +98,14 @@ impl Core {
             retired: 0,
             cycles: 0,
             state: CoreState::Running(pc),
+            stall_fetch: false,
+            stall_decode: false,
+            stall_execute: false,
+            ex_pending: None,
             breakpoints: HashMap::new(),
             ifid: IfIdLatch::default(),
             idex: IdExLatch::as_reset(),
-            exmem: ExMemLatch::default(),
+            ex: ExLatch::default(),
         }
     }
 
@@ -123,6 +131,8 @@ impl Core {
     pub fn pipeline_debug(&self) -> [String; 3] {
         let ifid = if self.ifid.valid {
             format!("IF  pc={:#06x}  op={:#04x}", self.ifid.pc, self.ifid.bytes[0])
+        } else if self.stall_fetch {
+            format!("IF  (nop-skip pc={:#06x})", self.ifid.pc)
         } else {
             "IF  (bubble)".to_string()
         };
@@ -138,21 +148,22 @@ impl Core {
         } else {
             "ID  (bubble)".to_string()
         };
-        [ifid, idex, format!("EX  {:?}", self.exmem)]
+        let ex = match self.ex_pending {
+            Some(n) => format!("EX  (mem access, {n} stall cycle(s) left)"),
+            None => format!("EX  {:?}", self.ex),
+        };
+        [ifid, idex, ex]
     }
 
     /**
      *      EXECUTION
-     *                                |------|
-     * The pipeline is IF -> ID -> EX -> MEM -> WB. 
-     * One thing to note is that EX can bypass MEM entirely
-     * if the instruction does not need to engage with memory.
-     * 
-     * `step` advances it by
-     * `count` whole clock cycles. MEM and WB aren't built yet, so an
-     * instruction that reaches EX bottoms out in a todo!() inside `execute` -
-     * with a straight-line program that lands three cycles after `step`
-     * starts (IF, then ID, then EX).
+     *
+     * The pipeline is IF -> ID -> EX -> WB. There is no MEM stage: memory
+     * access is folded into EX, which for a load/store occupies the stage for
+     * a fixed MEM_ACCESS_CYCLES. This asserts `stall_execute` and holding the
+     * front of the pipe (IF/ID, ID/EX, PC) until the access cycle.
+     *
+     * `step()` advances the pipeline by `count` whole clock cycles.
      */
     pub fn step(&mut self, count: usize) -> Result<u64, Trap> {
         for _ in 0..count {
@@ -177,27 +188,47 @@ impl Core {
         let idex_in = self.idex;
         let pc_in = self.pc;
 
-        // EX: work the ID/EX latch from last cycle.
-        let exmem = self.execute(&idex_in)?;
-        // ID: decode the IF/ID latch from last cycle.
-        let idex = self.decode(&ifid_in)?;
-        // IF: pull the frame at PC.
-        let ifid = self.fetch()?;
+        // EX: work the ID/EX latch from last cycle. A multi-cycle op (a memory
+        // access) asserts `stall_execute`; when it does, the front of the pipe
+        // holds - ID/EX keeps the same instruction so it re-enters EX next
+        // cycle - and only the EX latch advances (a bubble toward WB).
+        let ex = self.execute(&idex_in)?;
+        self.ex = ex;
 
-        // "Clock" edge - latch it all.
-        self.exmem = exmem;
-        self.idex = idex;
-        self.ifid = ifid;
-        self.pc = Self::next_pc(&ifid, pc_in);
+        if !self.stall_execute {
+            // ID: decode the IF/ID latch from last cycle.
+            let idex = self.decode(&ifid_in)?;
+            // IF: pull the frame at PC.
+            let ifid = self.fetch()?;
+
+            // "Clock" edge - latch it all.
+            self.idex = idex;
+            self.ifid = ifid;
+            // On a nop-skip cycle fetch produced no frame, so PC just steps over
+            // the `00 00` pad (PC += INSTR_ALIGN). Otherwise it moves past the
+            // whole frame that was just fetched.
+            self.pc = if self.stall_fetch {
+                pc_in + framing::INSTR_ALIGN
+            } else {
+                Self::next_pc(&ifid, pc_in)
+            };
+        }
         self.cycles += 1;
 
         logger::line(format!(
-            "cyc {:>8}  IF[{}]  ID[{}]  EX[{}]  pc->{:#06x}",
+            "cyc {:>8}  IF[{}]  ID[{}]  EX[{}]  pc->{:#06x}{}",
             self.cycles,
             frame_tag(&self.ifid),
             latch_tag(self.idex.valid, self.idex.instr.mnemonic),
             latch_tag(idex_in.valid, idex_in.instr.mnemonic),
             self.pc,
+            if self.stall_execute {
+                "  EX-stall"
+            } else if self.stall_fetch {
+                "  nop-skip"
+            } else {
+                ""
+            },
         ));
         Ok(())
     }
@@ -217,5 +248,8 @@ fn latch_tag(valid: bool, mnemonic: &str) -> String {
 }
 
 fn frame_tag(ifid: &IfIdLatch) -> String {
+    if !ifid.valid {
+        return format!("nop-skip @{:#06x}", ifid.pc);
+    }
     format!("op {:#04x} @{:#06x}", ifid.bytes[0], ifid.pc)
 }

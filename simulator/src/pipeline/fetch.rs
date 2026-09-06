@@ -28,7 +28,7 @@ impl Core {
     //
     // In silicon this is where the icache would sit. For now it's a straight
     // read out of the fake memory object.
-    pub fn fetch(&self) -> Result<IfIdLatch, Trap> {
+    pub fn fetch(&mut self) -> Result<IfIdLatch, Trap> {
         // Bit 0 of the PC is a reserved tag bit and every frame is 2-byte
         // aligned, so an odd PC means something upstream corrupted it.
         if self.pc % framing::INSTR_ALIGN != 0 {
@@ -44,6 +44,17 @@ impl Core {
             let chunk = memory::read(self.pc, have as u64).map_err(Trap::Memory)?;
             bytes[..have].copy_from_slice(&chunk);
         }
+
+        // nop-skip workaround: a real `nop` frame is exactly `00 00`, and run-off
+        // past the end of loaded memory reads back the same way. Neither should
+        // ever enter the pipe as an instruction, as execute has no work for a nop.
+        // Instead we spend this cycle stalling fetch: IF drives no latch,
+        // stall_fetch tells cycle() to step PC over just this frame (PC += 2).
+        if bytes[0] == framing::OPCODE_PAD_NOP && bytes[1] == 0 {
+            self.stall_fetch = true;
+            return Ok(IfIdLatch { valid: false, pc: self.pc, bytes: [0; 2 + framing::PLEN_MAX] });
+        }
+        self.stall_fetch = false;
 
         Ok(IfIdLatch { valid: true, pc: self.pc, bytes })
     }

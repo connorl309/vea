@@ -51,12 +51,13 @@ pub static INSTRUCTIONS: &[InstrDef] = &[
 
     // integer ALU, immediate form
     row("addi",  0x20, Form::RRI,     0, Some(0), "rd = rs + imm"),
-    row("andi",  0x21, Form::RRI,     0, Some(0), "rd = rs & imm"),
-    row("ori",   0x22, Form::RRI,     0, Some(0), "rd = rs | imm"),
-    row("xori",  0x23, Form::RRI,     0, Some(0), "rd = rs ^ imm"),
-    row("shli",  0x24, Form::RRI,     0, Some(0), "rd = rs << imm"),
-    row("shri",  0x25, Form::RRI,     0, Some(0), "rd = rs >> imm (logical)"),
-    row("sari",  0x26, Form::RRI,     0, Some(0), "rd = rs >> imm (arithmetic)"),
+    row("subi",  0x21, Form::RRI,     0, Some(0), "rd = rs - imm"),
+    row("andi",  0x22, Form::RRI,     0, Some(0), "rd = rs & imm"),
+    row("ori",   0x23, Form::RRI,     0, Some(0), "rd = rs | imm"),
+    row("xori",  0x24, Form::RRI,     0, Some(0), "rd = rs ^ imm"),
+    row("shli",  0x25, Form::RRI,     0, Some(0), "rd = rs << imm"),
+    row("shri",  0x26, Form::RRI,     0, Some(0), "rd = rs >> imm (logical)"),
+    row("sari",  0x27, Form::RRI,     0, Some(0), "rd = rs >> imm (arithmetic)"),
 
     // set-if-predicate: rd = (rs1 OP rs2) ? 1 : 0
     row("slt",   0x30, Form::RRR,     0, Some(0), "rd = rs1 < rs2  (signed)"),
