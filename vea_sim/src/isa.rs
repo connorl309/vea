@@ -6,9 +6,9 @@
  */
 
 // To what byte-alignment is every instruction?
-// For now, it is 8 byte aligned, so every fetch
-// will PC = (PC + plen) rounded up to the next multiple of 8.
-pub const ALIGNMENT: u64 = 0x8;
+// For now, it is 4 byte aligned, so every fetch
+// will PC = (PC + plen) rounded up to the next multiple of 4.
+pub const ALIGNMENT: u64 = 0x4;
 // How many registers does Vea support?
 pub const NUM_REGS: usize = 32;
 // Arbitrary constant identifying the PC register which
