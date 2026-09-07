@@ -1,0 +1,25 @@
+#!/bin/sh
+# Informational only - never blocks a commit (matches this repo's CI policy).
+#
+# Regenerates vea_sim/tests/gen_sim_tests.rs from the annotated tests/*.s
+# programs and stages it, so a commit never carries a stale generated test.
+# core.hooksPath points here (`git config core.hooksPath .githooks`).
+
+root=$(git rev-parse --show-toplevel) || exit 0
+gen="vea_sim/tests/gen_sim_tests.rs"
+
+command -v python3 >/dev/null 2>&1 || exit 0
+
+before=$(md5sum "$root/$gen" 2>/dev/null)
+( cd "$root/vea_sim" && python3 tests/testgen.py ) || {
+    echo "pre-commit: testgen.py failed - see output above (commit not blocked)." >&2
+    exit 0
+}
+after=$(md5sum "$root/$gen" 2>/dev/null)
+
+if [ "$before" != "$after" ]; then
+    git add "$root/$gen"
+    echo "pre-commit: regenerated and staged $gen" >&2
+fi
+
+exit 0

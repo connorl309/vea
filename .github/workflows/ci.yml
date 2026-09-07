@@ -20,11 +20,37 @@ jobs:
           workspaces: vea_sim
       - name: Build
         run: cargo build --verbose
-      - name: Test
+      - name: Sim test
         run: |
-          cargo install cargo-pretty-test
+          set -o pipefail
+          cargo install cargo-pretty-test --locked
           python3 tests/testgen.py
-          cargo pretty-test --color=always --verbose --no-fail-fast
-          echo '```text' >> $GITHUB_STEP_SUMMARY
-          echo "$(cargo pretty-test --color=never)" >> $GITHUB_STEP_SUMMARY 2>&1
-          echo '```' >> $GITHUB_STEP_SUMMARY
+
+          # Authoritative run. Plain libtest output is the source of truth for
+          # pass/fail and carries the panic / assertion message (with the
+          # generated-test line number) for every failure. --no-fail-fast so one
+          # failure does not hide the rest.
+          cargo test --no-fail-fast --color=always -- --nocapture 2>&1 | tee test-output.txt
+          status=${PIPESTATUS[0]}
+
+          # Pretty tree of every test name and its result, for the run summary.
+          cargo pretty-test --color=never --no-fail-fast > pretty.txt 2>&1 || true
+
+          {
+            echo '### Tests'
+            echo '```text'
+            cat pretty.txt
+            echo '```'
+            if [ "$status" -ne 0 ]; then
+              echo '### Failures'
+              echo '```text'
+              # Per-failure blocks: "---- <name> stdout ----" plus its panic /
+              # assertion text, then the trailing "failures:" name list.
+              grep -E -A 30 '^---- ' test-output.txt || cat test-output.txt
+              echo
+              sed -n '/^failures:$/,/^test result:/ p' test-output.txt
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit "$status"
