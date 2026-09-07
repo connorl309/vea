@@ -488,13 +488,22 @@ fn reg(tok: &str) -> Result<u8, String> {
     Err(format!("bad register '{tok}'"))
 }
 
-// Numeric literal to a signed value. None means the token is not numeric.
+// Numeric literal to a signed value. Hex carries a `0x` prefix, decimal a `#`
+// prefix (`mov r1, #10`, `add r1, r2, -#1`); an unprefixed token is not a
+// number and is left for label resolution. A leading `-` negates either form,
+// and `#-10` is accepted as well as `-#10`.
 fn imm(tok: &str) -> Option<i64> {
     let t = tok.trim();
-    let (neg, body) = t.strip_prefix('-').map_or((false, t), |r| (true, r.trim()));
-    let mag = match body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
-        Some(h) => i64::from_str_radix(h, 16).ok()?,
-        None => body.parse::<i64>().ok()?,
+    let (neg, body) = match t.strip_prefix('-') {
+        Some(rest) => (true, rest.trim_start()),
+        None => (false, t),
+    };
+    let mag = if let Some(hex) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
+        i64::from_str_radix(hex, 16).ok()?
+    } else if let Some(dec) = body.strip_prefix('#') {
+        dec.parse::<i64>().ok()?
+    } else {
+        return None;
     };
     Some(if neg { -mag } else { mag })
 }
@@ -520,8 +529,10 @@ fn is_ident(s: &str) -> bool {
         && s.chars().all(|x| x.is_ascii_alphanumeric() || x == '_' || x == '.')
 }
 
+// Comments run to end of line after `;` or `//`. `#` is not a comment marker:
+// it introduces a decimal literal (see `imm`).
 fn strip_comment(s: &str) -> &str {
-    let cut = [s.find(';'), s.find('#'), s.find("//")]
+    let cut = [s.find(';'), s.find("//")]
         .into_iter()
         .flatten()
         .min()
@@ -580,7 +591,7 @@ mod tests {
         // mov, register then immediate, including a negative literal
         ("mov r1, r2", "01 00 01 02"),
         ("mov r1, 0x1234", "01 21 01 12 34"),
-        ("mov r5, -1", "01 11 05 ff"),
+        ("mov r5, -#1", "01 11 05 ff"),
         // alu, three register form
         ("add r1, r2, r3", "10 00 01 02 03"),
         ("sub r1, r2, r3", "11 00 01 02 03"),
@@ -593,14 +604,14 @@ mod tests {
         ("mul r1, r2, r3", "19 00 01 02 03"),
         ("div r1, r2, r3", "1a 00 01 02 03"),
         ("not r1, r2", "14 00 01 02"),
-        // alu, immediate form and multi byte truncation
-        ("add r1, r2, 5", "10 11 01 02 05"),
-        ("sub r1, r1, 1", "11 11 01 01 01"),
+        // alu, immediate form (decimal `#`) and multi byte truncation (hex)
+        ("add r1, r2, #5", "10 11 01 02 05"),
+        ("sub r1, r1, #1", "11 11 01 01 01"),
         ("and r1, r2, 0xff", "12 21 01 02 00 ff"),
         // compare, unsigned and signed, plus the immediate zero edge
         ("cmp r1, r2", "20 00 01 02"),
         ("cmp.s r1, r2", "21 00 01 02"),
-        ("cmp r1, 0", "20 01 01"),
+        ("cmp r1, #0", "20 01 01"),
         // branch, every predicate sits in the flag nibble
         ("b 0x08", "30 10 08"),
         ("beq 0x08", "30 11 08"),
@@ -629,14 +640,14 @@ mod tests {
         ("st.b [r6], r5", "41 03 05 06"),
         ("st.h [r6], r5", "41 05 05 06"),
         ("st.w [r6], r5", "41 07 05 06"),
-        ("st [r6 - 4], r5", "41 11 05 06 fc"),
+        ("st [r6 - #4], r5", "41 11 05 06 fc"),
         ("st [r6 + r7], r5", "41 00 05 06 07"),
     ];
 
     // A whole program and its padded image. Exercises labels, the relative
     // branch offset, and per instruction alignment.
     const IMAGE: &[(&str, &str)] = &[
-        ("loop: sub r1, r1, 1\n b loop", "11 11 01 01 01 00 00 00 30 10 f8 00"),
+        ("loop: sub r1, r1, #1\n b loop", "11 11 01 01 01 00 00 00 30 10 f8 00"),
         ("start: nop\n jmp start", "00 00 00 00 31 10 00 00"),
         ("b done\n done: nop", "30 10 04 00 00 00 00 00"),
     ];
@@ -644,6 +655,7 @@ mod tests {
     // Sources the assembler must reject.
     const REJECT: &[&str] = &[
         "add r1, r2",     // wrong operand count
+        "add r1, r2, 5",  // decimal literal without the # prefix
         "mov r99, r1",    // register out of range
         "mov pc, r1",     // PC is architectural and not nameable
         "mov r33, r1",    // ...nor is its internal index

@@ -101,6 +101,31 @@ pub fn reset() {
     MEM.lock().unwrap().clear();
 }
 
+// Whether the 64K page holding `addr` is backed by storage. Instruction fetch
+// checks this so a program that runs off its own end faults here instead of
+// nop-sliding through blank memory.
+pub fn is_mapped(addr: u64) -> bool {
+    let (page, _) = split(addr);
+    MEM.lock().unwrap().contains_key(&page)
+}
+
+// How much of the address space is currently backed by real storage.
+pub struct Stats {
+    pub pages: usize,
+    pub bytes: u64,
+    // Highest mapped byte address, or 0 if nothing is mapped.
+    pub high: u64,
+}
+
+pub fn stats() -> Stats {
+    let mem = MEM.lock().unwrap();
+    Stats {
+        pages: mem.len(),
+        bytes: mem.len() as u64 * PAGE_SIZE as u64,
+        high: mem.keys().next_back().map_or(0, |&p| ((p + 1) << PAGE_BITS) - 1),
+    }
+}
+
 // Read `len` bytes starting at `addr` for display. Unmapped bytes read back as
 // zero. Bytes that would fall past the top of the address space are dropped, so
 // the result can be shorter than `len`. Unlike `read` this never faults, it is

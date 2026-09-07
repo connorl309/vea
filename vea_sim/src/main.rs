@@ -1,17 +1,11 @@
-pub mod assembler;
-pub mod error;
-pub mod isa;
-pub mod memory;
-pub mod onestep;
-pub mod shared;
-pub mod ui;
-
-pub use error::{Error, Result};
+// CLI shell over the `vea_sim` library.
 
 use std::io::{Read, Write};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+
+use vea_sim::{assembler, memory, ui};
 
 #[derive(Parser)]
 #[command(version, about = "Vea assembler and simulator toolchain")]

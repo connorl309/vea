@@ -80,10 +80,15 @@ impl Processor {
 
     fn tick(&mut self) -> error::Result<()> {
         let pc = self.pc;
-        let opcode = memory::read(pc, 1)? as u8;
         if self.halted {
             return sim_err!("tick() called while the simulator is halted");
         }
+        // Fetching from a page that was never loaded or written means control
+        // flow has left the program. Fault rather than execute blank memory.
+        if !memory::is_mapped(pc) {
+            return sim_err!("instruction fetch at unmapped address {pc:#018x}");
+        }
+        let opcode = memory::read(pc, 1)? as u8;
 
         // Each arm carries out the instruction and reports what happens to the
         // program counter. `Step::Next(len)` falls through to the next

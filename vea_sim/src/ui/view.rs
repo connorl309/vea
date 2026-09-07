@@ -30,9 +30,10 @@ pub fn draw(f: &mut Frame, app: &mut App, sh: &Shared) {
 
     let area = f.area();
     let rows = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(0),
-        Constraint::Length(1),
+        Constraint::Length(1), // header
+        Constraint::Min(0),    // panes
+        Constraint::Length(1), // status / command line
+        Constraint::Length(1), // keybar (always visible)
     ])
     .split(area);
 
@@ -42,7 +43,8 @@ pub fn draw(f: &mut Frame, app: &mut App, sh: &Shared) {
     } else {
         tab_body(f, rows[1], app, sh);
     }
-    footer(f, rows[2], app, &sh.snapshot);
+    status(f, rows[2], app, &sh.snapshot);
+    keybar(f, rows[3]);
 
     if app.show_help {
         help(f, area);
@@ -62,6 +64,19 @@ fn header(f: &mut Frame, area: Rect, app: &App, sh: &Shared) {
     };
     let name = sh.source.as_deref().unwrap_or("(no program)");
     let follow = if app.follow_pc { "follow" } else { "free" };
+
+    let m = memory::stats();
+    let mem = if m.pages == 0 {
+        "mem \u{2014}".to_string()
+    } else {
+        format!(
+            "mem {} \u{00b7} {} pg \u{00b7} hi {:#x}",
+            human_bytes(m.bytes),
+            m.pages,
+            m.high
+        )
+    };
+
     let line = Line::from(vec![
         Span::styled(
             " VEA ",
@@ -72,38 +87,79 @@ fn header(f: &mut Frame, area: Rect, app: &App, sh: &Shared) {
             format!("{label:<8}"),
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ),
-        Span::raw(format!(
-            "pc {:#018x}   instr {}   [{follow}]",
-            s.pc, s.completed_instrs
-        )),
+        Span::raw(format!("pc {:#018x}   instr {}   ", s.pc, s.completed_instrs)),
+        Span::styled(mem, Style::default().fg(Color::Gray)),
+        Span::styled(format!("   [{follow}]"), Style::default().fg(DIM)),
     ]);
     f.render_widget(Paragraph::new(line), area);
 }
 
-fn footer(f: &mut Frame, area: Rect, app: &App, s: &Snapshot) {
+fn human_bytes(n: u64) -> String {
+    const K: u64 = 1024;
+    if n >= K * K {
+        format!("{} MiB", n / (K * K))
+    } else if n >= K {
+        format!("{} KiB", n / K)
+    } else {
+        format!("{n} B")
+    }
+}
+
+// The line just above the keybar: the command line while typing, otherwise the
+// fault reason, the last command result, or a pending repeat count.
+fn status(f: &mut Frame, area: Rect, app: &App, s: &Snapshot) {
     let line = if let Mode::Command(buf) = &app.mode {
         Line::from(vec![
             Span::styled(":", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
             Span::raw(format!("{buf}\u{2588}")),
         ])
+    } else if let Some(err) = &s.fault {
+        Line::from(Span::styled(
+            format!(" \u{26a0} fault: {err}"),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ))
     } else if let Some(msg) = &app.message {
         let color = if app.message_is_error { Color::Red } else { Color::Green };
         Line::from(Span::styled(format!(" {msg}"), Style::default().fg(color)))
-    } else if let Some(err) = &s.fault {
+    } else if let Some(count) = app.count {
         Line::from(Span::styled(
-            format!(" fault: {err}"),
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            format!(" count: {count}"),
+            Style::default().fg(Color::Gray),
         ))
     } else {
-        let count = app.count.map(|c| format!("{c} ")).unwrap_or_default();
-        Line::from(Span::styled(
-            format!(
-                " {count}s step  space run  : cmd  Tab pane  jk scroll  f follow  x radix  R reload  ? help  q quit"
-            ),
-            Style::default().fg(DIM),
-        ))
+        Line::from("")
     };
     f.render_widget(Paragraph::new(line), area);
+}
+
+// Always-on keybinding strip. `?` opens the fuller reference with the command
+// list; this stays put so the bindings are never a mystery.
+fn keybar(f: &mut Frame, area: Rect) {
+    let mut spans: Vec<Span> = Vec::new();
+    let key = |k: &str, d: &str| {
+        [
+            Span::styled(format!(" {k} "), Style::default().fg(Color::Black).bg(DIM)),
+            Span::styled(format!(" {d}"), Style::default().fg(Color::Gray)),
+            Span::raw("   "),
+        ]
+    };
+    for pair in [
+        ("q", "quit"),
+        ("?", "keys"),
+        (":", "command"),
+        ("s", "step"),
+        ("space", "run"),
+        ("Tab", "pane"),
+        ("j/k", "scroll"),
+        ("d/u", "page"),
+        ("g/G", "start/pc"),
+        ("f", "follow"),
+        ("x", "radix"),
+        ("R", "reload"),
+    ] {
+        spans.extend(key(pair.0, pair.1));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn wide_body(f: &mut Frame, area: Rect, app: &mut App, sh: &Shared) {

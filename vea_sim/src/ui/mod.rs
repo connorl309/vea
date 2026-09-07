@@ -108,7 +108,10 @@ fn event_loop(term: &mut term::Tui, app: &mut App, sim: &mut Option<Sim>) -> Res
         if app.running {
             match sim {
                 Some(s) if !s.cpu.halted() => {
-                    if s.cpu.cycle(RUN_BATCH).is_err() || s.cpu.halted() {
+                    if let Err(e) = s.cpu.cycle(RUN_BATCH) {
+                        app.error(e.to_string());
+                        app.running = false;
+                    } else if s.cpu.halted() {
                         app.running = false;
                     }
                 }

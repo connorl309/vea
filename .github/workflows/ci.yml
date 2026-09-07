@@ -21,4 +21,10 @@ jobs:
       - name: Build
         run: cargo build --verbose
       - name: Test
-        run: cargo test --verbose
+        run: |
+          cargo install cargo-pretty-test
+          python3 tests/testgen.py
+          cargo pretty-test --color=always --verbose --no-fail-fast
+          echo '```text' >> $GITHUB_STEP_SUMMARY
+          echo "$(cargo pretty-test --color=never)" >> $GITHUB_STEP_SUMMARY 2>&1
+          echo '```' >> $GITHUB_STEP_SUMMARY
