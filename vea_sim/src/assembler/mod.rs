@@ -541,23 +541,75 @@ pub fn hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    // One source instruction and the exact bytes it must produce, no padding.
+    // Check every case and report all failures together, so a single bad row
+    // never masks the ones after it.
+    fn all<T>(cases: &[T], check: impl Fn(&T) -> Result<(), String>) {
+        let fails: Vec<String> = cases.iter().filter_map(|c| check(c).err()).collect();
+        assert!(fails.is_empty(), "\n{}", fails.join("\n"));
+    }
+
+    // Every mnemonic in INSTRUCTIONS, with the operand forms that shift the
+    // encoding, and the exact bytes each must produce (no alignment padding).
     const ENCODE: &[(&str, &str)] = &[
+        // processor control
         ("nop", "00 00"),
         ("halt", "ff 00"),
+        ("trap", "fe 00"),
+        ("trap 0x0d", "fe 10 0d"),
+        // mov, register then immediate, including a negative literal
         ("mov r1, r2", "01 00 01 02"),
         ("mov r1, 0x1234", "01 21 01 12 34"),
+        ("mov r5, -1", "01 11 05 ff"),
+        // alu, three register form
         ("add r1, r2, r3", "10 00 01 02 03"),
+        ("sub r1, r2, r3", "11 00 01 02 03"),
+        ("and r1, r2, r3", "12 00 01 02 03"),
+        ("or r1, r2, r3", "13 00 01 02 03"),
+        ("xor r1, r2, r3", "15 00 01 02 03"),
+        ("shl r1, r2, r3", "16 00 01 02 03"),
+        ("shr r1, r2, r3", "17 00 01 02 03"),
+        ("sar r1, r2, r3", "18 00 01 02 03"),
+        ("mul r1, r2, r3", "19 00 01 02 03"),
+        ("div r1, r2, r3", "1a 00 01 02 03"),
+        ("not r1, r2", "14 00 01 02"),
+        // alu, immediate form and multi byte truncation
         ("add r1, r2, 5", "10 11 01 02 05"),
-        ("sub r2, r2, 1", "11 11 02 02 01"),
+        ("sub r1, r1, 1", "11 11 01 01 01"),
+        ("and r1, r2, 0xff", "12 21 01 02 00 ff"),
+        // compare, unsigned and signed, plus the immediate zero edge
+        ("cmp r1, r2", "20 00 01 02"),
         ("cmp.s r1, r2", "21 00 01 02"),
-        ("b r5", "30 00 05"),
-        ("beq 0x40", "30 11 40"),
+        ("cmp r1, 0", "20 01 01"),
+        // branch, every predicate sits in the flag nibble
+        ("b 0x08", "30 10 08"),
+        ("beq 0x08", "30 11 08"),
+        ("bne 0x08", "30 12 08"),
+        ("blt 0x08", "30 13 08"),
+        ("bge 0x08", "30 14 08"),
+        ("bgt 0x08", "30 15 08"),
+        ("ble 0x08", "30 16 08"),
+        ("b r1", "30 00 01"),
+        ("beq r1", "30 01 01"),
+        // jump is absolute
+        ("jmp r7", "31 00 07"),
+        ("jmp 0x1000", "31 20 10 00"),
+        // load, size and sign in the flag nibble, displacement mode
         ("ld r5, [r6]", "40 01 05 06"),
-        ("ld.w r1, [r2 + 0x10]", "40 17 01 02 10"),
-        ("ld.sb r3, [r4 + r7]", "40 0a 03 04 07"),
-        ("st [r8 - 8], r9", "41 11 09 08 f8"),
-        ("st [r3 + r2], r2", "41 00 02 03 02"),
+        ("ld.b r5, [r6]", "40 03 05 06"),
+        ("ld.h r5, [r6]", "40 05 05 06"),
+        ("ld.w r5, [r6]", "40 07 05 06"),
+        ("ld.sb r5, [r6]", "40 0b 05 06"),
+        ("ld.sh r5, [r6]", "40 0d 05 06"),
+        ("ld.sw r5, [r6]", "40 0f 05 06"),
+        ("ld r5, [r6 + 0x10]", "40 11 05 06 10"),
+        ("ld r5, [r6 + r7]", "40 00 05 06 07"),
+        // store, no sign variants, value goes in the first register slot
+        ("st [r6], r5", "41 01 05 06"),
+        ("st.b [r6], r5", "41 03 05 06"),
+        ("st.h [r6], r5", "41 05 05 06"),
+        ("st.w [r6], r5", "41 07 05 06"),
+        ("st [r6 - 4], r5", "41 11 05 06 fc"),
+        ("st [r6 + r7], r5", "41 00 05 06 07"),
     ];
 
     // A whole program and its padded image. Exercises labels, the relative
@@ -580,25 +632,31 @@ mod tests {
 
     #[test]
     fn instruction_encoding_matches_reference() {
-        for (src, want) in ENCODE {
-            let raw = assemble_raw(src).unwrap_or_else(|e| panic!("{src}: {e}"));
-            assert_eq!(raw.len(), 1, "{src}: expected exactly one instruction");
-            assert_eq!(hex(&raw[0]), *want, "{src}");
-        }
+        all(ENCODE, |&(src, want)| {
+            let raw = assemble_raw(src).map_err(|e| format!("{src}: {e}"))?;
+            match raw.as_slice() {
+                [bytes] if hex(bytes) == want => Ok(()),
+                [bytes] => Err(format!("{src}: got [{}] want [{want}]", hex(bytes))),
+                _ => Err(format!("{src}: expected one instruction, got {}", raw.len())),
+            }
+        });
     }
 
     #[test]
     fn image_layout_matches_reference() {
-        for (src, want) in IMAGE {
-            let (image, _) = assemble(src).unwrap_or_else(|e| panic!("{src}: {e}"));
-            assert_eq!(hex(&image), *want, "{src}");
-        }
+        all(IMAGE, |&(src, want)| {
+            let (image, _) = assemble(src).map_err(|e| format!("{src}: {e}"))?;
+            (hex(&image) == want)
+                .then_some(())
+                .ok_or_else(|| format!("{src}: got [{}] want [{want}]", hex(&image)))
+        });
     }
 
     #[test]
     fn invalid_sources_are_rejected() {
-        for src in REJECT {
-            assert!(assemble(src).is_err(), "{src} should not assemble");
-        }
+        all(REJECT, |&src| match assemble(src) {
+            Err(_) => Ok(()),
+            Ok(_) => Err(format!("{src}: assembled but should have been rejected")),
+        });
     }
 }
