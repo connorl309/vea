@@ -1,5 +1,7 @@
 pub mod assembler;
 pub mod isa;
+pub mod memory;
+pub mod onestep;
 
 use std::io::{Read, Write};
 use std::process::ExitCode;
