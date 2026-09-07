@@ -19,8 +19,8 @@ use super::app::{App, Mode, Pane, Radix};
 const ACCENT: Color = Color::Cyan;
 const DIM: Color = Color::DarkGray;
 
-// Terminal at least this wide gets all three panes at once; narrower falls back
-// to one tabbed pane.
+// A terminal at least this wide shows all three panes at once; narrower falls
+// back to a single tabbed pane.
 const WIDE: u16 = 92;
 
 pub fn draw(f: &mut Frame, app: &mut App, sh: &Shared) {
@@ -36,7 +36,7 @@ pub fn draw(f: &mut Frame, app: &mut App, sh: &Shared) {
     ])
     .split(area);
 
-    header(f, rows[0], app, &sh.snapshot);
+    header(f, rows[0], app, sh);
     if area.width >= WIDE {
         wide_body(f, rows[1], app, sh);
     } else {
@@ -49,7 +49,8 @@ pub fn draw(f: &mut Frame, app: &mut App, sh: &Shared) {
     }
 }
 
-fn header(f: &mut Frame, area: Rect, app: &App, s: &Snapshot) {
+fn header(f: &mut Frame, area: Rect, app: &App, sh: &Shared) {
+    let s = &sh.snapshot;
     let (label, color) = if s.fault.is_some() {
         ("FAULT", Color::Red)
     } else if s.halted {
@@ -59,13 +60,14 @@ fn header(f: &mut Frame, area: Rect, app: &App, s: &Snapshot) {
     } else {
         ("PAUSED", Color::Gray)
     };
+    let name = sh.source.as_deref().unwrap_or("(no program)");
     let follow = if app.follow_pc { "follow" } else { "free" };
     let line = Line::from(vec![
         Span::styled(
             " VEA ",
             Style::default().bg(ACCENT).fg(Color::Black).add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  "),
+        Span::raw(format!("  {name}   ")),
         Span::styled(
             format!("{label:<8}"),
             Style::default().fg(color).add_modifier(Modifier::BOLD),
@@ -79,27 +81,27 @@ fn header(f: &mut Frame, area: Rect, app: &App, s: &Snapshot) {
 }
 
 fn footer(f: &mut Frame, area: Rect, app: &App, s: &Snapshot) {
-    let line = match &app.mode {
-        Mode::Goto(buf) => Line::from(vec![
-            Span::styled(" goto ", Style::default().bg(ACCENT).fg(Color::Black)),
-            Span::raw(format!(" 0x{buf}\u{2588}   enter jump / esc cancel")),
-        ]),
-        Mode::Normal => {
-            if let Some(err) = &s.fault {
-                Line::from(Span::styled(
-                    format!(" fault: {err}"),
-                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-                ))
-            } else {
-                let count = app.count.map(|c| format!("{c} ")).unwrap_or_default();
-                Line::from(Span::styled(
-                    format!(
-                        " {count}s step  space run  R reload  Tab pane  jk scroll  f follow  x radix  : goto  ? help  q quit"
-                    ),
-                    Style::default().fg(DIM),
-                ))
-            }
-        }
+    let line = if let Mode::Command(buf) = &app.mode {
+        Line::from(vec![
+            Span::styled(":", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::raw(format!("{buf}\u{2588}")),
+        ])
+    } else if let Some(msg) = &app.message {
+        let color = if app.message_is_error { Color::Red } else { Color::Green };
+        Line::from(Span::styled(format!(" {msg}"), Style::default().fg(color)))
+    } else if let Some(err) = &s.fault {
+        Line::from(Span::styled(
+            format!(" fault: {err}"),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ))
+    } else {
+        let count = app.count.map(|c| format!("{c} ")).unwrap_or_default();
+        Line::from(Span::styled(
+            format!(
+                " {count}s step  space run  : cmd  Tab pane  jk scroll  f follow  x radix  R reload  ? help  q quit"
+            ),
+            Style::default().fg(DIM),
+        ))
     };
     f.render_widget(Paragraph::new(line), area);
 }
@@ -139,21 +141,41 @@ fn tab_body(f: &mut Frame, area: Rect, app: &mut App, sh: &Shared) {
 }
 
 fn disasm(f: &mut Frame, area: Rect, app: &mut App, sh: &Shared) {
+    let block = panel(" disassembly ", app.focus == Pane::Disasm);
+
+    if sh.program.is_empty() {
+        app.disasm_rows = 0;
+        let hint = Paragraph::new(vec![
+            Line::from(""),
+            Line::from("  no program loaded"),
+            Line::from(""),
+            Line::from(vec![
+                Span::raw("  press "),
+                Span::styled(":", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+                Span::raw(" then  "),
+                Span::styled("load <path>", Style::default().fg(ACCENT)),
+            ]),
+        ])
+        .block(block);
+        f.render_widget(hint, area);
+        return;
+    }
+
     let pc = sh.snapshot.pc;
-    let prog = &sh.program;
-    let pc_row = prog.iter().position(|r| r.addr == pc);
+    let pc_row = sh.program.iter().position(|r| r.addr == pc);
 
     if app.follow_pc {
         if let Some(i) = pc_row {
             app.disasm_sel = i;
         }
     }
-    if app.disasm_sel >= prog.len() {
-        app.disasm_sel = prog.len().saturating_sub(1);
+    if app.disasm_sel >= sh.program.len() {
+        app.disasm_sel = sh.program.len() - 1;
     }
     app.disasm_rows = area.height.saturating_sub(2) as usize;
 
-    let items: Vec<ListItem> = prog
+    let items: Vec<ListItem> = sh
+        .program
         .iter()
         .enumerate()
         .map(|(i, r)| {
@@ -176,12 +198,10 @@ fn disasm(f: &mut Frame, area: Rect, app: &mut App, sh: &Shared) {
         .collect();
 
     let list = List::new(items)
-        .block(panel(" disassembly ", app.focus == Pane::Disasm))
+        .block(block)
         .highlight_style(Style::default().bg(DIM));
     let mut state = ListState::default();
-    if !prog.is_empty() {
-        state.select(Some(app.disasm_sel));
-    }
+    state.select(Some(app.disasm_sel));
     f.render_stateful_widget(list, area, &mut state);
 }
 
@@ -294,11 +314,11 @@ fn memory(f: &mut Frame, area: Rect, app: &mut App, s: &Snapshot) {
 }
 
 fn help(f: &mut Frame, area: Rect) {
-    if area.width < 40 || area.height < 12 {
+    if area.width < 44 || area.height < 14 {
         return;
     }
-    let w = 56.min(area.width - 4);
-    let h = 16.min(area.height - 4);
+    let w = 58.min(area.width - 4);
+    let h = 18.min(area.height - 4);
     let rect = Rect {
         x: area.x + (area.width - w) / 2,
         y: area.y + (area.height - h) / 2,
@@ -315,10 +335,10 @@ fn help(f: &mut Frame, area: Rect) {
         ("g  G", "jump to start / to PC"),
         ("f", "toggle follow-PC"),
         ("x", "registers hex / signed"),
-        (":", "memory goto address"),
+        (":", "command line"),
         ("q", "quit"),
     ];
-    let lines: Vec<Line> = keys
+    let mut lines: Vec<Line> = keys
         .iter()
         .map(|(k, d)| {
             Line::from(vec![
@@ -327,6 +347,11 @@ fn help(f: &mut Frame, area: Rect) {
             ])
         })
         .collect();
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  commands  ", Style::default().fg(ACCENT)),
+        Span::raw("load  reload  reset  run  step  goto  pc  quit"),
+    ]));
 
     f.render_widget(Clear, rect);
     f.render_widget(

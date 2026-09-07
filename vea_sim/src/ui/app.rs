@@ -1,13 +1,13 @@
 // ui/app.rs
 //
-// View state and key handling for the TUI. This half owns nothing about the
-// simulator: it decides what the user is looking at and turns keystrokes into
-// an `Action` for the event loop to carry out.
+// View state and key handling. This half owns nothing about the simulator: it
+// tracks what the user is looking at and turns keystrokes into an `Action` for
+// the event loop to carry out.
 
 use ratatui::crossterm::event::KeyCode;
 
 // Which pane has the keyboard. In the wide layout all three are on screen and
-// this picks the scroll target; in the narrow layout it also picks the tab.
+// this picks the scroll target; narrow, it also picks the visible tab.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
     Disasm,
@@ -35,20 +35,21 @@ pub enum Radix {
     Signed,
 }
 
-// Normal keys, or typing an address into the memory pane's goto prompt.
+// Normal keys, or typing into the command line.
 pub enum Mode {
     Normal,
-    Goto(String),
+    Command(String),
 }
 
 // What a keystroke asks the event loop to do. Anything that touches the
-// `Processor` goes through here rather than being done in this module.
+// `Processor` or the loaded program goes through here.
 pub enum Action {
     Nothing,
     Quit,
     Step(u64),
     ToggleRun,
     Reload,
+    Command(String),
 }
 
 pub struct App {
@@ -61,16 +62,19 @@ pub struct App {
     pub show_help: bool,
     // vim-style numeric prefix: `500s` steps 500 instructions.
     pub count: Option<u64>,
+    // Last command result, shown in the footer.
+    pub message: Option<String>,
+    pub message_is_error: bool,
 
     pub load_addr: u64,
 
     // Disassembly pane: the highlighted row.
     pub disasm_sel: usize,
-    // Memory pane: the address shown on the first row.
+    // Memory pane: the address on the first row.
     pub mem_base: u64,
 
     // Layout metrics the renderer stashes each frame so the key handler can
-    // page and follow-PC without knowing the terminal size itself.
+    // page and follow PC without knowing the terminal size itself.
     pub cur_pc: u64,
     pub prog_len: usize,
     pub disasm_rows: usize,
@@ -89,6 +93,8 @@ impl App {
             mode: Mode::Normal,
             show_help: false,
             count: None,
+            message: None,
+            message_is_error: false,
             load_addr,
             disasm_sel: 0,
             mem_base: load_addr & !0xF,
@@ -100,10 +106,24 @@ impl App {
         }
     }
 
+    pub fn info(&mut self, text: String) {
+        self.message = Some(text);
+        self.message_is_error = false;
+    }
+
+    pub fn error(&mut self, text: String) {
+        self.message = Some(text);
+        self.message_is_error = true;
+    }
+
+    pub fn goto_memory(&mut self, addr: u64) {
+        self.mem_base = addr & self.mem_mask();
+        self.focus = Pane::Memory;
+    }
+
     pub fn on_key(&mut self, code: KeyCode) -> Action {
-        if let Mode::Goto(_) = self.mode {
-            self.goto_key(code);
-            return Action::Nothing;
+        if let Mode::Command(_) = self.mode {
+            return self.command_key(code);
         }
         if self.show_help {
             self.show_help = false;
@@ -125,6 +145,10 @@ impl App {
             KeyCode::Char('s') | KeyCode::Char('.') => Action::Step(n),
             KeyCode::Char(' ') | KeyCode::Char('c') => Action::ToggleRun,
             KeyCode::Char('R') => Action::Reload,
+            KeyCode::Char(':') => {
+                self.mode = Mode::Command(String::new());
+                Action::Nothing
+            }
 
             KeyCode::Tab => {
                 self.focus = self.focus.next();
@@ -148,10 +172,6 @@ impl App {
             }
             KeyCode::Char('?') => {
                 self.show_help = true;
-                Action::Nothing
-            }
-            KeyCode::Char(':') => {
-                self.mode = Mode::Goto(String::new());
                 Action::Nothing
             }
 
@@ -182,7 +202,32 @@ impl App {
                 self.mem_base = self.cur_pc & self.mem_mask();
                 Action::Nothing
             }
-            KeyCode::Esc => Action::Nothing,
+            _ => Action::Nothing,
+        }
+    }
+
+    fn command_key(&mut self, code: KeyCode) -> Action {
+        let Mode::Command(buf) = &mut self.mode else {
+            return Action::Nothing;
+        };
+        match code {
+            KeyCode::Enter => {
+                let line = std::mem::take(buf);
+                self.mode = Mode::Normal;
+                Action::Command(line)
+            }
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                Action::Nothing
+            }
+            KeyCode::Backspace => {
+                buf.pop();
+                Action::Nothing
+            }
+            KeyCode::Char(c) => {
+                buf.push(c);
+                Action::Nothing
+            }
             _ => Action::Nothing,
         }
     }
@@ -213,30 +258,6 @@ impl App {
                 self.mem_base = self.mem_base.saturating_add_signed(delta) & self.mem_mask();
             }
             Pane::Registers => {}
-        }
-    }
-
-    fn goto_key(&mut self, code: KeyCode) {
-        let Mode::Goto(buf) = &mut self.mode else { return };
-        match code {
-            KeyCode::Enter => {
-                let digits = buf.trim().trim_start_matches("0x").trim_start_matches("0X");
-                if let Ok(addr) = u64::from_str_radix(digits, 16) {
-                    self.mem_base = addr & self.mem_mask();
-                    self.focus = Pane::Memory;
-                }
-                self.mode = Mode::Normal;
-            }
-            KeyCode::Esc => self.mode = Mode::Normal,
-            KeyCode::Backspace => {
-                buf.pop();
-            }
-            KeyCode::Char(c) if c.is_ascii_hexdigit() => {
-                if buf.len() < 16 {
-                    buf.push(c);
-                }
-            }
-            _ => {}
         }
     }
 }

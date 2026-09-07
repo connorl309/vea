@@ -58,6 +58,8 @@ pub struct Shared {
     pub snapshot: Snapshot,
     pub program: Vec<ListingRow>,
     pub load_addr: u64,
+    // Path the program was loaded from, for the UI to label.
+    pub source: Option<String>,
 }
 
 impl Shared {
@@ -66,6 +68,7 @@ impl Shared {
         snapshot: Snapshot::INITIAL,
         program: Vec::new(),
         load_addr: 0,
+        source: None,
     };
 }
 
@@ -84,11 +87,12 @@ pub fn publish(snapshot: Snapshot) {
     s.snapshot = snapshot;
 }
 
-// Install a freshly assembled program and the address it was loaded at. Called
-// once before the UI starts.
-pub fn install_program(program: Vec<ListingRow>, load_addr: u64) {
+// Install a freshly assembled program, the address it was loaded at, and the
+// path it came from. Called whenever the UI opens or reloads a file.
+pub fn install_program(program: Vec<ListingRow>, load_addr: u64, source: String) {
     let mut s = SHARED.lock().unwrap();
     s.generation = s.generation.wrapping_add(1);
     s.program = program;
     s.load_addr = load_addr;
+    s.source = Some(source);
 }
