@@ -18,33 +18,12 @@
  */
 
 use std::collections::BTreeMap;
-use std::fmt;
 use std::sync::Mutex;
 
-use crate::error::{Result, SimError};
+use crate::error::Result;
 
 pub const PAGE_BITS: u32 = 16;
 pub const PAGE_SIZE: usize = 1 << PAGE_BITS;
-
-/// Something a memory access can get wrong.
-#[derive(Debug)]
-pub enum Fault {
-    BadWidth(usize),
-    OutOfSpace { addr: u64, len: usize },
-}
-
-impl fmt::Display for Fault {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Fault::BadWidth(w) => write!(f, "access width must be 1, 2, 4 or 8 bytes, got {w}"),
-            Fault::OutOfSpace { addr, len } => {
-                write!(f, "access at {addr:#018x} for {len} bytes runs past the address space")
-            }
-        }
-    }
-}
-
-impl SimError for Fault {}
 
 static MEM: Mutex<BTreeMap<u64, Box<[u8]>>> = Mutex::new(BTreeMap::new()); // avoid lazylock
 
@@ -61,7 +40,7 @@ fn blank_page() -> Box<[u8]> {
 fn check_width(width: usize) -> Result<()> {
     match width {
         1 | 2 | 4 | 8 => Ok(()),
-        _ => Err(Fault::BadWidth(width).into()),
+        _ => crate::sim_err!("access width must be 1, 2, 4 or 8 bytes, got {width}"),
     }
 }
 
@@ -69,7 +48,7 @@ fn check_width(width: usize) -> Result<()> {
 // the address space.
 fn check_range(addr: u64, len: usize) -> Result<()> {
     if len > 0 && addr.checked_add(len as u64 - 1).is_none() {
-        return Err(Fault::OutOfSpace { addr, len }.into());
+        return crate::sim_err!("access at {addr:#018x} for {len} bytes runs past the address space");
     }
     Ok(())
 }

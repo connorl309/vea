@@ -62,10 +62,9 @@ impl ConditionCodes {
 
     pub fn new(masks: u8) -> crate::error::Result<Self> {
         if masks > 0xF {
-            Err(crate::sim_err!("condition code mask {masks:#06b} has undefined bits set"))
-        } else {
-            Ok(ConditionCodes { data: masks })
+            return crate::sim_err!("condition code mask {masks:#06b} has undefined bits set");
         }
+        Ok(ConditionCodes { data: masks })
     }
     pub fn reset() -> Self {
         ConditionCodes { data: 0 }

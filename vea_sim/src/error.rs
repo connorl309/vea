@@ -1,92 +1,50 @@
 // error.rs
 
 /*
- * Project wide error handling.
+ * Project wide error handling, kept deliberately tiny.
  *
- * A module declares its own error type, writes a Display impl that is the
- * message, and adds an empty `impl SimError`. Functions return crate::Result
- * and the value converts into the shared Error through `?` with nothing extra
- * at the call site.
+ * There is one error type. It carries an owned message and nothing else.
+ * Every fallible operation returns `crate::Result<T>`. To fail, call
+ * `sim_err!` with a format string, from anywhere, no imports:
  *
- *   sim_error!(Halt, "executed a halt instruction");       // no payload
+ *   return sim_err!("address {addr:#x} is unmapped");
  *
- *   #[derive(Debug)]
- *   struct BadAddr(u64);
- *   impl std::fmt::Display for BadAddr { ... }
- *   impl crate::error::SimError for BadAddr {}
+ *   if masks > 0xF {
+ *       return sim_err!("condition code mask {masks:#06b} has undefined bits");
+ *   }
  *
- *   return Err(sim_err!("address {addr:#x} is unmapped")); // one off
+ * `sim_err!` expands to `Err(Error(format!(..)))`, so it is the whole return
+ * value / tail expression, not something you wrap in `Err(..)` yourself.
  */
 
 use std::fmt;
 
-/// Marker for a module local error. Its Display output is the message.
-pub trait SimError: fmt::Display + fmt::Debug + Send + Sync + 'static {}
-
-/// The single error type that crosses module boundaries. Any SimError turns into
-/// one through `?`.
-pub struct Error(Box<dyn SimError>);
-
-impl<E: SimError> From<E> for Error {
-    fn from(e: E) -> Self {
-        Error(Box::new(e))
-    }
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl fmt::Debug for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self.0)
-    }
-}
-
-impl std::error::Error for Error {}
+/// The single error type. Its `Display` output is the message.
+pub struct Error(pub String);
 
 /// Every fallible operation in the simulator returns this.
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// A ready made error that just carries an owned message. Build it with sim_err!.
-#[derive(Debug)]
-pub struct Message(pub String);
-
-impl fmt::Display for Message {
+impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
 }
 
-impl SimError for Message {}
-
-/// Declare a payload free error type whose message is fixed.
-///
-/// `sim_error!(Halt, "executed a halt instruction");`
-#[macro_export]
-macro_rules! sim_error {
-    ($name:ident, $message:literal) => {
-        #[derive(Debug)]
-        pub struct $name;
-
-        impl ::std::fmt::Display for $name {
-            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-                f.write_str($message)
-            }
-        }
-
-        impl $crate::error::SimError for $name {}
-    };
+impl fmt::Debug for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
-/// Build an Error from a format string, on the spot.
+impl std::error::Error for Error {}
+
+/// Build a failed `Result` from a format string, on the spot.
 ///
-/// `return Err(sim_err!("address {addr:#x} is unmapped"));`
+/// `return sim_err!("address {addr:#x} is unmapped");`
 #[macro_export]
 macro_rules! sim_err {
     ($($arg:tt)*) => {
-        $crate::error::Error::from($crate::error::Message(::std::format!($($arg)*)))
+        ::core::result::Result::Err($crate::error::Error(::std::format!($($arg)*)))
     };
 }
