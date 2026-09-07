@@ -101,6 +101,21 @@ pub fn reset() {
     MEM.lock().unwrap().clear();
 }
 
+// Read `len` bytes starting at `addr` for display. Unmapped bytes read back as
+// zero. Bytes that would fall past the top of the address space are dropped, so
+// the result can be shorter than `len`. Unlike `read` this never faults, it is
+// only meant to feed a hex view.
+pub fn dump(addr: u64, len: usize) -> Vec<u8> {
+    let mem = MEM.lock().unwrap();
+    (0..len as u64)
+        .map_while(|i| addr.checked_add(i))
+        .map(|a| {
+            let (page, off) = split(a);
+            mem.get(&page).map_or(0, |p| p[off])
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

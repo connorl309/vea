@@ -1,0 +1,356 @@
+// ui/view.rs
+//
+// Every widget the TUI draws. Reads the shared snapshot and the current `App`
+// state and paints a frame; it never mutates the simulator and only stashes
+// layout metrics back onto `App` for the key handler.
+
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
+
+use crate::isa::NUM_REGS;
+use crate::memory;
+use crate::shared::{Shared, Snapshot};
+
+use super::app::{App, Mode, Pane, Radix};
+
+const ACCENT: Color = Color::Cyan;
+const DIM: Color = Color::DarkGray;
+
+// Terminal at least this wide gets all three panes at once; narrower falls back
+// to one tabbed pane.
+const WIDE: u16 = 92;
+
+pub fn draw(f: &mut Frame, app: &mut App, sh: &Shared) {
+    // Hand the key handler what it needs to follow PC and clamp scrolling.
+    app.cur_pc = sh.snapshot.pc;
+    app.prog_len = sh.program.len();
+
+    let area = f.area();
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ])
+    .split(area);
+
+    header(f, rows[0], app, &sh.snapshot);
+    if area.width >= WIDE {
+        wide_body(f, rows[1], app, sh);
+    } else {
+        tab_body(f, rows[1], app, sh);
+    }
+    footer(f, rows[2], app, &sh.snapshot);
+
+    if app.show_help {
+        help(f, area);
+    }
+}
+
+fn header(f: &mut Frame, area: Rect, app: &App, s: &Snapshot) {
+    let (label, color) = if s.fault.is_some() {
+        ("FAULT", Color::Red)
+    } else if s.halted {
+        ("HALTED", Color::Yellow)
+    } else if app.running {
+        ("RUNNING", Color::Green)
+    } else {
+        ("PAUSED", Color::Gray)
+    };
+    let follow = if app.follow_pc { "follow" } else { "free" };
+    let line = Line::from(vec![
+        Span::styled(
+            " VEA ",
+            Style::default().bg(ACCENT).fg(Color::Black).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            format!("{label:<8}"),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(format!(
+            "pc {:#018x}   instr {}   [{follow}]",
+            s.pc, s.completed_instrs
+        )),
+    ]);
+    f.render_widget(Paragraph::new(line), area);
+}
+
+fn footer(f: &mut Frame, area: Rect, app: &App, s: &Snapshot) {
+    let line = match &app.mode {
+        Mode::Goto(buf) => Line::from(vec![
+            Span::styled(" goto ", Style::default().bg(ACCENT).fg(Color::Black)),
+            Span::raw(format!(" 0x{buf}\u{2588}   enter jump / esc cancel")),
+        ]),
+        Mode::Normal => {
+            if let Some(err) = &s.fault {
+                Line::from(Span::styled(
+                    format!(" fault: {err}"),
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                ))
+            } else {
+                let count = app.count.map(|c| format!("{c} ")).unwrap_or_default();
+                Line::from(Span::styled(
+                    format!(
+                        " {count}s step  space run  R reload  Tab pane  jk scroll  f follow  x radix  : goto  ? help  q quit"
+                    ),
+                    Style::default().fg(DIM),
+                ))
+            }
+        }
+    };
+    f.render_widget(Paragraph::new(line), area);
+}
+
+fn wide_body(f: &mut Frame, area: Rect, app: &mut App, sh: &Shared) {
+    let cols = Layout::horizontal([Constraint::Min(30), Constraint::Length(48)]).split(area);
+    disasm(f, cols[0], app, sh);
+    let right = Layout::vertical([Constraint::Length(22), Constraint::Min(4)]).split(cols[1]);
+    registers(f, right[0], app, &sh.snapshot);
+    memory(f, right[1], app, &sh.snapshot);
+}
+
+fn tab_body(f: &mut Frame, area: Rect, app: &mut App, sh: &Shared) {
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+
+    let mut tabs: Vec<Span> = Vec::new();
+    for (name, pane) in [
+        ("disasm", Pane::Disasm),
+        ("registers", Pane::Registers),
+        ("memory", Pane::Memory),
+    ] {
+        let style = if app.focus == pane {
+            Style::default().bg(ACCENT).fg(Color::Black).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(DIM)
+        };
+        tabs.push(Span::styled(format!(" {name} "), style));
+        tabs.push(Span::raw(" "));
+    }
+    f.render_widget(Paragraph::new(Line::from(tabs)), rows[0]);
+
+    match app.focus {
+        Pane::Disasm => disasm(f, rows[1], app, sh),
+        Pane::Registers => registers(f, rows[1], app, &sh.snapshot),
+        Pane::Memory => memory(f, rows[1], app, &sh.snapshot),
+    }
+}
+
+fn disasm(f: &mut Frame, area: Rect, app: &mut App, sh: &Shared) {
+    let pc = sh.snapshot.pc;
+    let prog = &sh.program;
+    let pc_row = prog.iter().position(|r| r.addr == pc);
+
+    if app.follow_pc {
+        if let Some(i) = pc_row {
+            app.disasm_sel = i;
+        }
+    }
+    if app.disasm_sel >= prog.len() {
+        app.disasm_sel = prog.len().saturating_sub(1);
+    }
+    app.disasm_rows = area.height.saturating_sub(2) as usize;
+
+    let items: Vec<ListItem> = prog
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let here = Some(i) == pc_row;
+            let gutter = if here { "\u{25b6} " } else { "  " };
+            let bytes = r
+                .bytes
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let text = format!("{gutter}{:08x}  {bytes:<23}  {}", r.addr, r.text);
+            let style = if here {
+                Style::default().fg(Color::Black).bg(ACCENT).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(text).style(style)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(panel(" disassembly ", app.focus == Pane::Disasm))
+        .highlight_style(Style::default().bg(DIM));
+    let mut state = ListState::default();
+    if !prog.is_empty() {
+        state.select(Some(app.disasm_sel));
+    }
+    f.render_stateful_widget(list, area, &mut state);
+}
+
+fn registers(f: &mut Frame, area: Rect, app: &App, s: &Snapshot) {
+    let inner_w = area.width.saturating_sub(2) as usize;
+    let cell = match app.radix {
+        Radix::Hex => 22,
+        Radix::Signed => 26,
+    };
+    let cols = (inner_w / cell).clamp(1, 4);
+    let per_col = NUM_REGS.div_ceil(cols);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for row in 0..per_col {
+        let mut spans: Vec<Span> = Vec::new();
+        for col in 0..cols {
+            let idx = row + col * per_col;
+            if idx >= NUM_REGS {
+                continue;
+            }
+            let v = s.regs[idx];
+            let body = match app.radix {
+                Radix::Hex => format!("r{idx:<2} {v:016x}  "),
+                Radix::Signed => format!("r{idx:<2} {:>20}  ", v as i64),
+            };
+            let style = if v == 0 {
+                Style::default().fg(DIM)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            spans.push(Span::styled(body, style));
+        }
+        lines.push(Line::from(spans));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(format!("pc {:016x}", s.pc)));
+    lines.push(flags_line(s));
+
+    f.render_widget(
+        Paragraph::new(lines).block(panel(" registers ", app.focus == Pane::Registers)),
+        area,
+    );
+}
+
+fn flags_line(s: &Snapshot) -> Line<'static> {
+    let flag = |name: &str, on: bool| {
+        let style = if on {
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(DIM)
+        };
+        Span::styled(format!("{name}{}  ", on as u8), style)
+    };
+    Line::from(vec![
+        Span::raw("flags  "),
+        flag("Z", s.flags.z),
+        flag("N", s.flags.n),
+        flag("C", s.flags.c),
+        flag("V", s.flags.v),
+    ])
+}
+
+fn memory(f: &mut Frame, area: Rect, app: &mut App, s: &Snapshot) {
+    let inner_w = area.width.saturating_sub(2) as usize;
+    let inner_h = area.height.saturating_sub(2).max(1) as usize;
+
+    // address ("00000000: ") + n * "xx " + gap + n ascii chars
+    let fits = |n: usize| 10 + n * 3 + 1 + n <= inner_w;
+    let stride = if fits(16) {
+        16
+    } else if fits(8) {
+        8
+    } else {
+        4
+    };
+    app.mem_stride = stride as u64;
+    app.mem_rows = inner_h as u64;
+
+    let base = app.mem_base & !(stride as u64 - 1);
+    let data = memory::dump(base, inner_h * stride);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (row, chunk) in data.chunks(stride).enumerate() {
+        let addr = base + (row * stride) as u64;
+        let mut spans = vec![Span::styled(format!("{addr:08x}: "), Style::default().fg(DIM))];
+        for (i, b) in chunk.iter().enumerate() {
+            let style = if addr + i as u64 == s.pc {
+                Style::default().fg(Color::Black).bg(ACCENT)
+            } else if *b == 0 {
+                Style::default().fg(DIM)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            spans.push(Span::styled(format!("{b:02x} "), style));
+        }
+        spans.push(Span::raw(" "));
+        let ascii: String = chunk
+            .iter()
+            .map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' })
+            .collect();
+        spans.push(Span::styled(ascii, Style::default().fg(Color::Gray)));
+        lines.push(Line::from(spans));
+    }
+
+    let title = format!(" memory  {base:#010x} ");
+    f.render_widget(
+        Paragraph::new(lines).block(panel(&title, app.focus == Pane::Memory)),
+        area,
+    );
+}
+
+fn help(f: &mut Frame, area: Rect) {
+    if area.width < 40 || area.height < 12 {
+        return;
+    }
+    let w = 56.min(area.width - 4);
+    let h = 16.min(area.height - 4);
+    let rect = Rect {
+        x: area.x + (area.width - w) / 2,
+        y: area.y + (area.height - h) / 2,
+        width: w,
+        height: h,
+    };
+    let keys = [
+        ("s  .", "step (prefix a count, e.g. 500s)"),
+        ("space  c", "run / pause"),
+        ("R", "reload the program from disk"),
+        ("Tab", "cycle panes"),
+        ("j k  arrows", "scroll the focused pane"),
+        ("d u", "page down / up"),
+        ("g  G", "jump to start / to PC"),
+        ("f", "toggle follow-PC"),
+        ("x", "registers hex / signed"),
+        (":", "memory goto address"),
+        ("q", "quit"),
+    ];
+    let lines: Vec<Line> = keys
+        .iter()
+        .map(|(k, d)| {
+            Line::from(vec![
+                Span::styled(format!("  {k:<12}"), Style::default().fg(ACCENT)),
+                Span::raw(*d),
+            ])
+        })
+        .collect();
+
+    f.render_widget(Clear, rect);
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(ACCENT))
+                .title(" keys  (any key closes) "),
+        ),
+        rect,
+    );
+}
+
+fn panel(title: &str, focused: bool) -> Block<'static> {
+    let border = if focused {
+        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(DIM)
+    };
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(border)
+        .title(Span::styled(
+            title.to_string(),
+            Style::default().fg(Color::White),
+        ))
+}

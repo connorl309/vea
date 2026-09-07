@@ -12,6 +12,7 @@ pub use crate::isa;
 use crate::isa::NUM_REGS;
 use crate::error;
 use crate::memory;
+use crate::shared;
 use crate::sim_err;
 
 // Model of the processor for sim purposes.
@@ -37,11 +38,44 @@ impl Processor {
     // Quick halted getter function
     pub fn halted(&self) -> bool { self.halted }
 
-    // wrapper around `tick` for N times.
-    pub fn cycle(&mut self, amount: u64) {
+    // Advance the machine by up to `amount` instructions, stopping early on a
+    // halt or a fault. The shared snapshot the UI reads is refreshed once.
+    pub fn cycle(&mut self, amount: u64) -> error::Result<()> {
+        let mut outcome = Ok(());
         for _ in 0..amount {
-            if self.halted { break }
+            if self.halted {
+                break;
+            }
+            if let Err(e) = self.tick() {
+                outcome = Err(e);
+                break;
+            }
         }
+        let fault = outcome.as_ref().err().map(|e| e.to_string());
+        self.publish_with(fault);
+        outcome
+    }
+
+    // Copy the architectural state onto the shared bus the UI renders from.
+    // Called at the end of every `cycle`, and once before the UI starts.
+    pub fn publish(&self) {
+        self.publish_with(None);
+    }
+
+    fn publish_with(&self, fault: Option<String>) {
+        shared::publish(shared::Snapshot {
+            pc: self.pc,
+            regs: self.regs,
+            flags: shared::Flags {
+                z: self.cc.zero(),
+                n: self.cc.neg(),
+                c: self.cc.carry(),
+                v: self.cc.overflow(),
+            },
+            completed_instrs: self.completed_instrs,
+            halted: self.halted,
+            fault,
+        });
     }
 
     fn tick(&mut self) -> error::Result<()> {

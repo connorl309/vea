@@ -213,19 +213,40 @@ fn sym_width(value: i64, relative: bool) -> Result<usize, String> {
     Ok(n)
 }
 
-/// Assemble source text into a flat load ready image.
-/// Also returns a one line per instruction listing for debug output.
-pub fn assemble(src: &str) -> Result<(Vec<u8>, Vec<String>), String> {
+/// One assembled instruction: where it sits in the flat image, the bytes it
+/// encoded to (no alignment padding), and the source text it came from. The TUI
+/// renders these as the disassembly / source view.
+#[derive(Debug, Clone)]
+pub struct ListingRow {
+    pub addr: u64,
+    pub bytes: Vec<u8>,
+    pub text: String,
+}
+
+/// Assemble source text into a flat load ready image plus a structured listing,
+/// one row per instruction.
+pub fn assemble_listing(src: &str) -> Result<(Vec<u8>, Vec<ListingRow>), String> {
     let (insns, syms) = lower(src)?;
     let mut image = Vec::new();
-    let mut listing = Vec::new();
+    let mut rows = Vec::new();
     for insn in &insns {
         let bytes = encode(insn, &syms).map_err(|e| format!("line {}: {e}", insn.line))?;
-        listing.push(format!("{:08x}  {:<23}  {}", insn.addr, hex(&bytes), insn.text));
         image.extend_from_slice(&bytes);
         let pad = align_up(bytes.len() as u64, ALIGNMENT) as usize - bytes.len();
         image.resize(image.len() + pad, 0);
+        rows.push(ListingRow { addr: insn.addr, bytes, text: insn.text.clone() });
     }
+    Ok((image, rows))
+}
+
+/// Assemble source text into a flat load ready image.
+/// Also returns a one line per instruction listing for debug output.
+pub fn assemble(src: &str) -> Result<(Vec<u8>, Vec<String>), String> {
+    let (image, rows) = assemble_listing(src)?;
+    let listing = rows
+        .iter()
+        .map(|r| format!("{:08x}  {:<23}  {}", r.addr, hex(&r.bytes), r.text))
+        .collect();
     Ok((image, listing))
 }
 
