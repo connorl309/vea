@@ -5,3 +5,9 @@ edition = "2024"
 
 [dependencies]
 clap = { version = "4.6.6", features = ["derive"] }
+
+# This project does not police style. Dead code and the deliberately non camel
+# case Op variants are allowed, and rustfmt.toml turns formatting off.
+[lints.rust]
+dead_code = "allow"
+non_camel_case_types = "allow"

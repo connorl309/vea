@@ -1,0 +1,7 @@
+#!/bin/sh
+# Informational only. Runs the test suite and prints the result, but never blocks
+# a commit or a push. The authoritative check is GitHub Actions (.github/workflows).
+if ! cargo test --quiet --manifest-path vea_sim/Cargo.toml; then
+    echo "pre-commit: tests are failing. Commit allowed, see CI."
+fi
+exit 0

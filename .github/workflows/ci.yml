@@ -1,0 +1,24 @@
+name: CI
+
+# Informational only. This reports build and test status on every push and pull
+# request. It does not gate commits or pushes.
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: vea_sim
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: vea_sim
+      - name: Build
+        run: cargo build --verbose
+      - name: Test
+        run: cargo test --verbose

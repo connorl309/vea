@@ -1,0 +1,2 @@
+# Formatting is not enforced on this project. cargo fmt is a no op.
+disable_all_formatting = true
