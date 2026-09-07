@@ -115,6 +115,7 @@ impl Processor {
         };
 
         self.completed_instrs += 1;
+
         self.pc = match step {
             Step::Next(len) => align_up(pc + len, isa::ALIGNMENT),
             Step::Jump(dest) => dest,
