@@ -69,4 +69,18 @@ impl ConditionCodes {
     pub fn reset() -> Self {
         ConditionCodes { data: 0 }
     }
+
+    // Overwrite all four flags at once as needed
+    pub fn set(&mut self, zero: bool, neg: bool, carry: bool, overflow: bool) {
+        let bit = |on, mask| if on { mask } else { 0 };
+        self.data = bit(zero, Self::ZERO_MASK)
+            | bit(neg, Self::NEG_MASK)
+            | bit(carry, Self::CARRY_MASK)
+            | bit(overflow, Self::OVERFLOW_MASK);
+    }
+
+    pub fn zero(&self) -> bool { self.data & Self::ZERO_MASK != 0 }
+    pub fn neg(&self) -> bool { self.data & Self::NEG_MASK != 0 }
+    pub fn carry(&self) -> bool { self.data & Self::CARRY_MASK != 0 }
+    pub fn overflow(&self) -> bool { self.data & Self::OVERFLOW_MASK != 0 }
 }
