@@ -1,7 +1,10 @@
 pub mod assembler;
+pub mod error;
 pub mod isa;
 pub mod memory;
 pub mod onestep;
+
+pub use error::{Error, Result};
 
 use std::io::{Read, Write};
 use std::process::ExitCode;
@@ -35,6 +38,9 @@ struct AsmArgs {
 }
 
 fn main() -> ExitCode {
+    // Zero out modeled memory
+    memory::clear();
+
     match Cli::parse().cmd {
         Cmd::Asm(args) => cmd_asm(args),
     }

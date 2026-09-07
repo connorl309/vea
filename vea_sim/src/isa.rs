@@ -11,6 +11,7 @@
 pub const ALIGNMENT: u64 = 0x4;
 // How many registers does Vea support?
 pub const NUM_REGS: usize = 32;
+pub type RegisterFile = [u64; NUM_REGS];
 // Arbitrary constant identifying the PC register which
 // is not typically exposed anywhere.
 pub const PC_REG: usize = NUM_REGS + 1;
@@ -59,11 +60,11 @@ impl ConditionCodes {
     pub const CARRY_MASK: u8 = 0b0010;
     pub const OVERFLOW_MASK: u8 = 0b0001;
 
-    pub fn new(masks: u8) -> Self {
+    pub fn new(masks: u8) -> crate::error::Result<Self> {
         if masks > 0xF {
-            panic!("Input condition code mask has undefined bits set!");
+            Err(crate::sim_err!("condition code mask {masks:#06b} has undefined bits set"))
         } else {
-            ConditionCodes { data: masks }
+            Ok(ConditionCodes { data: masks })
         }
     }
     pub fn reset() -> Self {
