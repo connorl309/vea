@@ -7,6 +7,7 @@ pub mod assembler;
 pub mod error;
 pub mod isa;
 pub mod memory;
+pub mod nstep;
 pub mod onestep;
 pub mod shared;
 pub mod ui;
