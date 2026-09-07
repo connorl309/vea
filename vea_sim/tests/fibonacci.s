@@ -27,3 +27,5 @@ fib:    add   r6, r2, r3     ; c = a + b
         halt
 
 ;= final: r3=55 r6=55 r4=11 r11=1 r12=55
+; fib(0)=0 and fib(1)=1 as the first two big-endian 8-byte words
+;= final: mem@0x3000 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]

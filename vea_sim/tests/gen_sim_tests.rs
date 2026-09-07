@@ -2,8 +2,8 @@
 // Regenerate with: python3 tests/testgen.py
 //
 // One #[test] per tests/*.s program. Each assembles its source, runs the
-// onestep simulator one instruction at a time, and checks the register
-// snapshot against that program's `;=` comments as their lines retire.
+// onestep simulator one instruction at a time, and checks the register and
+// memory snapshot against that program's `;=` comments as their lines retire.
 
 use std::io::Write;
 use std::path::Path;
@@ -18,13 +18,12 @@ static LOCK: Mutex<()> = Mutex::new(());
 
 const CAP: u64 = 100_000;
 
-// (1-based instruction index, source line, &[(reg, value)]) - checked every
-// time that instruction retires.
-type Inline = &'static [(usize, u32, &'static [(usize, u64)])];
-// (retired-instruction count, source line, &[(reg, value)]) - from `;= at N:`.
-type AtCount = &'static [(u64, u32, &'static [(usize, u64)])];
-// (source line, &[(reg, value)]) - from `;= final:`, checked once halted.
-type Final = (u32, &'static [(usize, u64)]);
+// Register checks: (1-based instruction index, source line, &[(reg, value)]).
+type Regs = &'static [(usize, u32, &'static [(usize, u64)])];
+// `;= at N:` register checks: (retired-instruction count, source line, &[(reg, value)]).
+type AtRegs = &'static [(u64, u32, &'static [(usize, u64)])];
+// Memory checks: (1-based instruction index, source line, addr, &[expected bytes]).
+type Mem = &'static [(usize, u32, u64, &'static [u8])];
 
 macro_rules! src {
     ($name:literal) => {
@@ -32,19 +31,30 @@ macro_rules! src {
     };
 }
 
-// Assemble `source`, run it to halt (or the cap), and assert every checkpoint.
-fn check(source: &str, inline: Inline, at_count: AtCount, final_: Final) {
+#[derive(Default)]
+struct Prog {
+    source: &'static str,
+    inline: Regs,                                   // checked each time that instruction retires
+    inline_mem: Mem,                                // ditto, a memory slice
+    at_count: AtRegs,                               // checked after N retired instructions
+    final_regs: (u32, &'static [(usize, u64)]),     // (line, checks) - once halted
+    final_mem: &'static [(u32, u64, &'static [u8])], // (line, addr, bytes) - once halted
+}
+
+// Assemble `p.source`, run it to halt (or the cap), and assert every checkpoint.
+fn check(p: Prog) {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     memory::reset();
-    let (image, rows) = assembler::assemble_listing(source).expect("program assembles");
+    let (image, rows) = assembler::assemble_listing(p.source).expect("program assembles");
     memory::load(0, &image).expect("image loads");
     let mut cpu = onestep::Processor::new();
 
     // Resolve each annotated instruction index to the address it loaded at.
-    let inline: Vec<(u64, u32, &[(usize, u64)])> = inline
-        .iter()
-        .map(|&(idx, line, checks)| (rows[idx - 1].addr, line, checks))
-        .collect();
+    let addr_of = |idx: usize| rows[idx - 1].addr;
+    let inline: Vec<(u64, u32, &[(usize, u64)])> =
+        p.inline.iter().map(|&(i, line, c)| (addr_of(i), line, c)).collect();
+    let inline_mem: Vec<(u64, u32, u64, &[u8])> =
+        p.inline_mem.iter().map(|&(i, line, a, b)| (addr_of(i), line, a, b)).collect();
 
     let mut steps = 0u64;
     while !cpu.halted() && steps < CAP {
@@ -54,14 +64,22 @@ fn check(source: &str, inline: Inline, at_count: AtCount, final_: Final) {
         let (regs, completed) =
             shared::with(|s| (s.snapshot.regs, s.snapshot.completed_instrs));
 
-        for &(addr, line, checks) in &inline {
-            if addr == pc {
+        for &(at, line, checks) in &inline {
+            if at == pc {
                 for &(reg, want) in checks {
-                    assert_eq!(regs[reg], want, "line {line}: r{reg} (pc {addr:#x})");
+                    assert_eq!(regs[reg], want, "line {line}: r{reg} (pc {at:#x})");
                 }
             }
         }
-        for &(count, line, checks) in at_count {
+        for &(at, line, addr, want) in &inline_mem {
+            if at == pc {
+                assert_eq!(
+                    memory::dump(addr, want.len()).as_slice(), want,
+                    "line {line}: mem@{addr:#x}"
+                );
+            }
+        }
+        for &(count, line, checks) in p.at_count {
             if count == completed {
                 for &(reg, want) in checks {
                     assert_eq!(regs[reg], want, "line {line}: r{reg} at instruction {count}");
@@ -73,17 +91,23 @@ fn check(source: &str, inline: Inline, at_count: AtCount, final_: Final) {
     assert!(cpu.halted(), "program did not halt within {CAP} instructions");
 
     let regs = shared::with(|s| s.snapshot.regs);
-    let (line, checks) = final_;
+    let (line, checks) = p.final_regs;
     for &(reg, want) in checks {
         assert_eq!(regs[reg], want, "line {line}: r{reg} at halt");
+    }
+    for &(line, addr, want) in p.final_mem {
+        assert_eq!(
+            memory::dump(addr, want.len()).as_slice(), want,
+            "line {line}: mem@{addr:#x} at halt"
+        );
     }
 }
 
 #[test]
 fn bitops() {
-    check(
-        src!("bitops.s"),
-        &[
+    check(Prog {
+        source: src!("bitops.s"),
+        inline: &[
             (1, 5, &[(1, 3855)]),
             (2, 6, &[(2, 255)]),
             (3, 7, &[(3, 15)]),
@@ -96,76 +120,118 @@ fn bitops() {
             (10, 14, &[(10, 18446744073709551612)]),
             (11, 15, &[(11, 4611686018427387900)]),
         ],
-        &[],
-        (18, &[(3, 15), (6, 18446744073709547760), (10, 18446744073709551612)]),
-    );
+        final_regs: (18, &[(3, 15), (6, 18446744073709547760), (10, 18446744073709551612)]),
+        ..Default::default()
+    });
 }
 
 #[test]
 fn branch_predicates() {
-    check(
-        src!("branch_predicates.s"),
-        &[],
-        &[],
-        (39, &[(20, 63)]),
-    );
+    check(Prog {
+        source: src!("branch_predicates.s"),
+        final_regs: (39, &[(20, 63)]),
+        ..Default::default()
+    });
 }
 
 #[test]
 fn bubble_sort() {
-    check(
-        src!("bubble_sort.s"),
-        &[
+    check(Prog {
+        source: src!("bubble_sort.s"),
+        inline: &[
             (1, 4, &[(1, 16384)]),
         ],
-        &[],
-        (44, &[(10, 1), (11, 2), (12, 3), (13, 5), (14, 8)]),
-    );
+        final_regs: (44, &[(10, 1), (11, 2), (12, 3), (13, 5), (14, 8)]),
+        final_mem: &[
+            (44, 0x4000, &[1, 2, 3, 5, 8]),
+        ],
+        ..Default::default()
+    });
 }
 
 #[test]
 fn factorial() {
-    check(
-        src!("factorial.s"),
-        &[
+    check(Prog {
+        source: src!("factorial.s"),
+        inline: &[
             (1, 5, &[(1, 1)]),
-            (2, 6, &[(2, 5)]),
+            (2, 6, &[(2, 12)]),
         ],
-        &[],
-        (15, &[(1, 120), (2, 0)]),
-    );
+        final_regs: (15, &[(1, 479001600), (2, 0)]),
+        ..Default::default()
+    });
 }
 
 #[test]
 fn fibonacci() {
-    check(
-        src!("fibonacci.s"),
-        &[
+    check(Prog {
+        source: src!("fibonacci.s"),
+        inline: &[
             (1, 5, &[(1, 12288)]),
         ],
-        &[],
-        (29, &[(3, 55), (4, 11), (6, 55), (11, 1), (12, 55)]),
-    );
+        final_regs: (29, &[(3, 55), (4, 11), (6, 55), (11, 1), (12, 55)]),
+        final_mem: &[
+            (31, 0x3000, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]),
+        ],
+        ..Default::default()
+    });
+}
+
+#[test]
+fn mem_stress() {
+    check(Prog {
+        source: src!("mem_stress.s"),
+        inline: &[
+            (20, 38, &[(12, 255)]),
+            (21, 39, &[(13, 18446744073709551615)]),
+            (24, 42, &[(15, 128)]),
+            (27, 45, &[(17, 18446744073709518848)]),
+            (31, 51, &[(20, 72623859790382856)]),
+        ],
+        inline_mem: &[
+            (3, 11, 0x1000, &[17, 34, 51, 68, 85, 102, 119, 136]),
+            (5, 15, 0x1000, &[17, 34, 170, 187, 85, 102, 119, 136]),
+            (7, 19, 0x1000, &[17, 34, 170, 187, 0, 0, 192, 222]),
+            (12, 26, 0x200f, &[1, 127]),
+            (16, 32, 0x3008, &[11, 173, 240, 13]),
+            (30, 50, 0xfffc, &[1, 2, 3, 4, 5, 6, 7, 8]),
+        ],
+        final_regs: (55, &[(12, 255), (13, 18446744073709551615), (15, 128), (17, 18446744073709518848), (20, 72623859790382856)]),
+        final_mem: &[
+            (56, 0x1000, &[17, 34, 170, 187, 0, 0, 192, 222]),
+            (57, 0x200f, &[1, 127]),
+            (58, 0x3008, &[11, 173, 240, 13]),
+            (60, 0xfffe, &[3, 4, 5, 6, 7, 8, 0, 0]),
+            (62, 0x5000, &[0, 0, 0, 0, 0, 0, 0, 0]),
+        ],
+        ..Default::default()
+    });
 }
 
 #[test]
 fn memcpy() {
-    check(
-        src!("memcpy.s"),
-        &[
+    check(Prog {
+        source: src!("memcpy.s"),
+        inline: &[
             (1, 5, &[(1, 4096)]),
             (2, 6, &[(2, 8192)]),
         ],
-        &[],
-        (31, &[(3, 16), (10, 4369), (11, 8738), (12, 13107), (13, 17476)]),
-    );
+        inline_mem: &[
+            (4, 9, 0x1000, &[0, 0, 17, 17]),
+        ],
+        final_regs: (31, &[(3, 16), (10, 4369), (11, 8738), (12, 13107), (13, 17476)]),
+        final_mem: &[
+            (32, 0x2000, &[0, 0, 17, 17, 0, 0, 34, 34, 0, 0, 51, 51, 0, 0, 68, 68]),
+        ],
+        ..Default::default()
+    });
 }
 
 #[test]
 fn run_all_instrs_all_modes() {
-    check(
-        src!("run_all_instrs_all_modes.s"),
-        &[
+    check(Prog {
+        source: src!("run_all_instrs_all_modes.s"),
+        inline: &[
             (1, 7, &[(1, 100)]),
             (2, 8, &[(2, 100)]),
             (3, 9, &[(3, 105)]),
@@ -185,16 +251,16 @@ fn run_all_instrs_all_modes() {
             (18, 26, &[(1, 100)]),
             (20, 28, &[(15, 105)]),
         ],
-        &[],
-        (31, &[(1, 100), (12, 18446744073709551615), (14, 25), (15, 105)]),
-    );
+        final_regs: (31, &[(1, 100), (12, 18446744073709551615), (14, 25), (15, 105)]),
+        ..Default::default()
+    });
 }
 
 #[test]
 fn sample_basics() {
-    check(
-        src!("sample_basics.s"),
-        &[
+    check(Prog {
+        source: src!("sample_basics.s"),
+        inline: &[
             (1, 16, &[(1, 10)]),
             (2, 17, &[(2, 256)]),
             (3, 18, &[(3, 266)]),
@@ -207,52 +273,57 @@ fn sample_basics() {
             (10, 25, &[(10, 64)]),
             (11, 26, &[(11, 3)]),
         ],
-        &[
+        at_count: &[
             (21, 33, &[(11, 0)]),
         ],
-        (35, &[(1, 10), (9, 160), (11, 0)]),
-    );
+        final_regs: (35, &[(1, 10), (9, 160), (11, 0)]),
+        ..Default::default()
+    });
 }
 
 #[test]
 fn signed_vs_unsigned() {
-    check(
-        src!("signed_vs_unsigned.s"),
-        &[
+    check(Prog {
+        source: src!("signed_vs_unsigned.s"),
+        inline: &[
             (1, 5, &[(1, 18446744073709551611)]),
             (2, 6, &[(2, 3)]),
         ],
-        &[],
-        (23, &[(1, 18446744073709551611), (10, 1), (11, 0)]),
-    );
+        final_regs: (23, &[(1, 18446744073709551611), (10, 1), (11, 0)]),
+        ..Default::default()
+    });
 }
 
 #[test]
 fn strlen() {
-    check(
-        src!("strlen.s"),
-        &[
+    check(Prog {
+        source: src!("strlen.s"),
+        inline: &[
             (1, 4, &[(1, 20480)]),
         ],
-        &[],
-        (22, &[(3, 3), (4, 0)]),
-    );
+        final_regs: (22, &[(3, 3), (4, 0)]),
+        final_mem: &[
+            (22, 0x5000, &[72, 105, 33, 0]),
+        ],
+        ..Default::default()
+    });
 }
 
 #[test]
 fn sum_1_to_n() {
-    check(
-        src!("sum_1_to_n.s"),
-        &[
+    check(Prog {
+        source: src!("sum_1_to_n.s"),
+        inline: &[
             (1, 5, &[(1, 0)]),
             (2, 6, &[(2, 0)]),
             (3, 7, &[(3, 10)]),
         ],
-        &[
+        at_count: &[
             (5, 16, &[(1, 1), (2, 1)]),
         ],
-        (17, &[(1, 55), (2, 10), (3, 10)]),
-    );
+        final_regs: (17, &[(1, 55), (2, 10), (3, 10)]),
+        ..Default::default()
+    });
 }
 
 // ---- freshness -----------------------------------------------------------
@@ -261,14 +332,15 @@ fn sum_1_to_n() {
 const SOURCES: &[(&str, &str)] = &[
     ("bitops.s", "b70a921badffd68ddcb5808a6d48c3e0"),
     ("branch_predicates.s", "c2cefa6da51956309d435fb6f221707e"),
-    ("bubble_sort.s", "9da74dd8a72ff9bebd09b1d258d1e3ce"),
-    ("factorial.s", "f54d12d8b5d41009c20a97c6b0749787"),
-    ("fibonacci.s", "fa4ceaa156ce4036b41202f5af7b9b9b"),
-    ("memcpy.s", "ff23af2ed23e2d90f5b1cb254181e475"),
+    ("bubble_sort.s", "43a49dd0834250fda90a4186090246db"),
+    ("factorial.s", "03c075b80b964bfeb153b196c6f07884"),
+    ("fibonacci.s", "26805cb895f427c5702d635b452b3adf"),
+    ("mem_stress.s", "5b8acc73410fafa6f8cf3dfb1298e91f"),
+    ("memcpy.s", "b96f64bd0a351a81fc065eaf72511ae5"),
     ("run_all_instrs_all_modes.s", "c0c2b41998de6968f49e5d615c2341e3"),
     ("sample_basics.s", "4e95d761b1058c52f59b54aa676c0bc8"),
     ("signed_vs_unsigned.s", "6b1f33d0ced0a463fe0095ceda30a816"),
-    ("strlen.s", "bc2843c7277f0e22631aee0da665b814"),
+    ("strlen.s", "9a7436abec88243086625bc001371239"),
     ("sum_1_to_n.s", "04de3223d4fc14763541cfcf9305b80b"),
 ];
 

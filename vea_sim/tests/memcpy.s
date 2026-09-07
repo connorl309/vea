@@ -6,7 +6,7 @@
         mov   r2, 0x2000      ;= r2=8192     ; dst base
 
         mov   r5, 0x1111
-        st.w  [r1], r5
+        st.w  [r1], r5              ;= mem@0x1000 = [0, 0, 0x11, 0x11]
         mov   r5, 0x2222
         st.w  [r1 + #4], r5
         mov   r5, 0x3333
@@ -29,3 +29,4 @@ copy:   ld.w  r6, [r1 + r3]
         halt
 
 ;= final: r3=16 r10=0x1111 r11=0x2222 r12=0x3333 r13=0x4444
+;= final: mem@0x2000 = [0, 0, 0x11, 0x11, 0, 0, 0x22, 0x22, 0, 0, 0x33, 0x33, 0, 0, 0x44, 0x44]

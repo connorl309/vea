@@ -41,4 +41,4 @@ noswap: add   r5, r5, #1
         ld.b  r14, [r1 + #4]
         halt
 
-;= final: r10=1 r11=2 r12=3 r13=5 r14=8
+;= final: r10=1 r11=2 r12=3 r13=5 r14=8 mem@0x4000 = [1, 2, 3, 5, 8]

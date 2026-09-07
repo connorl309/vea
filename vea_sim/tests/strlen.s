@@ -19,5 +19,5 @@ scan:   ld.b  r4, [r1 + r3]
         b     scan
 done:   halt
 
-;= final: r3=3 r4=0
+;= final: r3=3 r4=0 mem@0x5000 = [72, 105, 33, 0]
 
