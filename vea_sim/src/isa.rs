@@ -22,9 +22,14 @@ pub struct ConditionCodes {
     data: u8
 }
 
-// How large is the i- and d-cache?
-// TODO: Sim modeling for caches
-pub const ICACHE_SIZE: usize = usize::MIN;
+// The widest instruction frame in VEA.
+// Fetch always pulls a whole frame so Decode sees every byte it might need.
+pub const MAX_INSN_BYTES: usize = 13;
+
+// Instruction cache: a sliding window of program bytes Fetch streams through,
+// refilled when the PC nears the end. See nstep::icache.
+// TODO: d-cache modeling for loads/stores
+pub const ICACHE_SIZE: usize = 512;
 pub const DCACHE_SIZE: usize = usize::MIN;
 
 // How many cycles will modeled (fake) memory
@@ -51,6 +56,13 @@ impl VeaReg {
         }
     }
     pub fn idx(&self) -> usize { self.0 as usize }
+}
+
+// Round `v` up to the next multiple of `a`. Instruction addresses advance by
+// this rule with `a == ALIGNMENT`, matching the assembler's per-instruction
+// padding.
+pub fn align_up(v: u64, a: u64) -> u64 {
+    (v + a - 1) / a * a
 }
 
 // Condition Codes
