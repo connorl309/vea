@@ -9,23 +9,27 @@
  * byte accesses are big endian to match VEA, work across page boundaries, and
  * return a Fault if the width is unsupported or the access runs off the top of
  * the 64 bit space.
- *
- * The store is process global. Tests that write to it must not run in parallel
- * with each other. Keep such assertions inside a single test function, or gate
- * them behind a shared lock, or revisit this idea for later implementation testing
- * (i.e. multiple read ports from dram).
- *
  */
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use crate::error::Result;
 
 pub const PAGE_BITS: u32 = 16;
 pub const PAGE_SIZE: usize = 1 << PAGE_BITS;
 
-static MEM: Mutex<BTreeMap<u64, Box<[u8]>>> = Mutex::new(BTreeMap::new()); // avoid lazylock
+type Store = BTreeMap<u64, Box<[u8]>>;
+
+static MEM: Mutex<Store> = Mutex::new(BTreeMap::new()); // avoid lazylock
+
+// We need a secondary lock for entire tests not just individual cases.
+// We can't use the normal mutex because then the simulator's accesses
+// might get fucked up too.
+static TEST_SEQ: Mutex<()> = Mutex::new(());
+pub fn test_guard() -> MutexGuard<'static, ()> {
+    TEST_SEQ.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 // Split an address into its page number and its offset within that page.
 fn split(addr: u64) -> (u64, usize) {
@@ -53,60 +57,115 @@ fn check_range(addr: u64, len: usize) -> Result<()> {
     Ok(())
 }
 
+// Memory access structure for thread safety
+pub struct MemGuard<'a> {
+    mem: MutexGuard<'a, Store>,
+}
+
+impl MemGuard<'_> {
+    // Clear all of simulated memory.
+    pub fn clear(&mut self) {
+        self.mem.clear();
+    }
+
+    // Read `width` bytes at `addr`, big endian, zero extended into a u64.
+    pub fn read(&self, addr: u64, width: usize) -> Result<u64> {
+        check_width(width)?;
+        check_range(addr, width)?;
+        let mut buf = [0u8; 8];
+        for (i, slot) in buf[8 - width..].iter_mut().enumerate() {
+            let (page, off) = split(addr.wrapping_add(i as u64));
+            if let Some(p) = self.mem.get(&page) {
+                *slot = p[off];
+            }
+        }
+        Ok(u64::from_be_bytes(buf))
+    }
+
+    // Write the low `width` bytes of `val` at `addr`, big endian.
+    pub fn write(&mut self, addr: u64, width: usize, val: u64) -> Result<()> {
+        check_width(width)?;
+        check_range(addr, width)?;
+        for (i, byte) in val.to_be_bytes()[8 - width..].iter().enumerate() {
+            let (page, off) = split(addr.wrapping_add(i as u64));
+            self.mem.entry(page).or_insert_with(blank_page)[off] = *byte;
+        }
+        Ok(())
+    }
+
+    // Copy a byte image into memory starting at `addr`. Used to load a program.
+    pub fn load(&mut self, addr: u64, bytes: &[u8]) -> Result<()> {
+        check_range(addr, bytes.len())?;
+        for (i, b) in bytes.iter().enumerate() {
+            let (page, off) = split(addr.wrapping_add(i as u64));
+            self.mem.entry(page).or_insert_with(blank_page)[off] = *b;
+        }
+        Ok(())
+    }
+
+    // Whether the 64K page holding `addr` is backed by storage.
+    pub fn is_mapped(&self, addr: u64) -> bool {
+        let (page, _) = split(addr);
+        self.mem.contains_key(&page)
+    }
+
+    // How much of the address space is currently backed by real storage.
+    pub fn stats(&self) -> Stats {
+        Stats {
+            pages: self.mem.len(),
+            bytes: self.mem.len() as u64 * PAGE_SIZE as u64,
+            high: self.mem.keys().next_back().map_or(0, |&p| ((p + 1) << PAGE_BITS) - 1),
+        }
+    }
+
+    // Read `len` bytes starting at `addr` for display. This cannot fault!!
+    pub fn dump(&self, addr: u64, len: usize) -> Vec<u8> {
+        (0..len as u64)
+            .map_while(|i| addr.checked_add(i))
+            .map(|a| {
+                let (page, off) = split(a);
+                self.mem.get(&page).map_or(0, |p| p[off])
+            })
+            .collect()
+    }
+}
+
+// Take the store lock and hold it until the returned guard drops. Use this when
+// in test cases, for example.
+pub fn lock() -> MemGuard<'static> {
+    MemGuard { mem: MEM.lock().unwrap_or_else(|e| e.into_inner()) }
+}
+
 // Clear all of simulated memory.
 pub fn clear() {
-    MEM.lock().unwrap().clear();
+    lock().clear();
 }
 
 // Read `width` bytes at `addr`, big endian, zero extended into a u64.
 pub fn read(addr: u64, width: usize) -> Result<u64> {
-    check_width(width)?;
-    check_range(addr, width)?;
-    let mem = MEM.lock().unwrap();
-    let mut buf = [0u8; 8];
-    for (i, slot) in buf[8 - width..].iter_mut().enumerate() {
-        let (page, off) = split(addr.wrapping_add(i as u64));
-        if let Some(p) = mem.get(&page) {
-            *slot = p[off];
-        }
-    }
-    Ok(u64::from_be_bytes(buf))
+    lock().read(addr, width)
 }
 
 // Write the low `width` bytes of `val` at `addr`, big endian.
 pub fn write(addr: u64, width: usize, val: u64) -> Result<()> {
-    check_width(width)?;
-    check_range(addr, width)?;
-    let mut mem = MEM.lock().unwrap();
-    for (i, byte) in val.to_be_bytes()[8 - width..].iter().enumerate() {
-        let (page, off) = split(addr.wrapping_add(i as u64));
-        mem.entry(page).or_insert_with(blank_page)[off] = *byte;
-    }
-    Ok(())
+    lock().write(addr, width, val)
 }
 
 // Copy a byte image into memory starting at `addr`. Used to load a program.
 pub fn load(addr: u64, bytes: &[u8]) -> Result<()> {
-    check_range(addr, bytes.len())?;
-    let mut mem = MEM.lock().unwrap();
-    for (i, b) in bytes.iter().enumerate() {
-        let (page, off) = split(addr.wrapping_add(i as u64));
-        mem.entry(page).or_insert_with(blank_page)[off] = *b;
-    }
-    Ok(())
+    lock().load(addr, bytes)
 }
 
 // Drop every stored byte. Call between programs or between tests.
 pub fn reset() {
-    MEM.lock().unwrap().clear();
+    lock().clear();
 }
 
 // Whether the 64K page holding `addr` is backed by storage. Instruction fetch
 // checks this so a program that runs off its own end faults here instead of
 // nop-sliding through blank memory.
 pub fn is_mapped(addr: u64) -> bool {
-    let (page, _) = split(addr);
-    MEM.lock().unwrap().contains_key(&page)
+    lock().is_mapped(addr)
 }
 
 // How much of the address space is currently backed by real storage.
@@ -118,12 +177,7 @@ pub struct Stats {
 }
 
 pub fn stats() -> Stats {
-    let mem = MEM.lock().unwrap();
-    Stats {
-        pages: mem.len(),
-        bytes: mem.len() as u64 * PAGE_SIZE as u64,
-        high: mem.keys().next_back().map_or(0, |&p| ((p + 1) << PAGE_BITS) - 1),
-    }
+    lock().stats()
 }
 
 // Read `len` bytes starting at `addr` for display. Unmapped bytes read back as
@@ -131,14 +185,7 @@ pub fn stats() -> Stats {
 // the result can be shorter than `len`. Unlike `read` this never faults, it is
 // only meant to feed a hex view.
 pub fn dump(addr: u64, len: usize) -> Vec<u8> {
-    let mem = MEM.lock().unwrap();
-    (0..len as u64)
-        .map_while(|i| addr.checked_add(i))
-        .map(|a| {
-            let (page, off) = split(a);
-            mem.get(&page).map_or(0, |p| p[off])
-        })
-        .collect()
+    lock().dump(addr, len)
 }
 
 #[cfg(test)]
@@ -147,53 +194,55 @@ mod tests {
 
     #[test]
     fn read_write_load_reset() -> Result<()> {
-        reset();
+        let _seq = test_guard();
+        let mut m = lock();
+        m.clear();
 
         // never written reads as zero
-        assert_eq!(read(0x1000, 8)?, 0);
+        assert_eq!(m.read(0x1000, 8)?, 0);
 
         // big endian round trip at each width
-        write(0x2000, 1, 0xAB)?;
-        assert_eq!(read(0x2000, 1)?, 0xAB);
+        m.write(0x2000, 1, 0xAB)?;
+        assert_eq!(m.read(0x2000, 1)?, 0xAB);
 
-        write(0x2010, 2, 0x1234)?;
-        assert_eq!(read(0x2010, 2)?, 0x1234);
-        assert_eq!(read(0x2010, 1)?, 0x12); // most significant byte sits first
+        m.write(0x2010, 2, 0x1234)?;
+        assert_eq!(m.read(0x2010, 2)?, 0x1234);
+        assert_eq!(m.read(0x2010, 1)?, 0x12); // most significant byte sits first
 
-        write(0x2020, 4, 0xDEAD_BEEF)?;
-        assert_eq!(read(0x2020, 4)?, 0xDEAD_BEEF);
+        m.write(0x2020, 4, 0xDEAD_BEEF)?;
+        assert_eq!(m.read(0x2020, 4)?, 0xDEAD_BEEF);
 
-        write(0x2030, 8, 0x0123_4567_89AB_CDEF)?;
-        assert_eq!(read(0x2030, 8)?, 0x0123_4567_89AB_CDEF);
-        assert_eq!(read(0x2034, 4)?, 0x89AB_CDEF); // low word of that store
+        m.write(0x2030, 8, 0x0123_4567_89AB_CDEF)?;
+        assert_eq!(m.read(0x2030, 8)?, 0x0123_4567_89AB_CDEF);
+        assert_eq!(m.read(0x2034, 4)?, 0x89AB_CDEF); // low word of that store
 
         // a write only touches the bytes it names
-        write(0x3000, 2, 0xFFFF)?;
-        assert_eq!(read(0x2FFF, 1)?, 0);
-        assert_eq!(read(0x3002, 1)?, 0);
+        m.write(0x3000, 2, 0xFFFF)?;
+        assert_eq!(m.read(0x2FFF, 1)?, 0);
+        assert_eq!(m.read(0x3002, 1)?, 0);
 
         // bulk image load
-        load(0x4000, &[0xCA, 0xFE, 0xBA, 0xBE])?;
-        assert_eq!(read(0x4000, 4)?, 0xCAFE_BABE);
+        m.load(0x4000, &[0xCA, 0xFE, 0xBA, 0xBE])?;
+        assert_eq!(m.read(0x4000, 4)?, 0xCAFE_BABE);
 
         // an access that straddles a page boundary still round trips
-        write(0xFFFE, 8, 0x1122_3344_5566_7788)?;
-        assert_eq!(read(0xFFFE, 8)?, 0x1122_3344_5566_7788);
-        assert_eq!(read(0x1_0000, 2)?, 0x3344); // the bytes that landed in page 1
+        m.write(0xFFFE, 8, 0x1122_3344_5566_7788)?;
+        assert_eq!(m.read(0xFFFE, 8)?, 0x1122_3344_5566_7788);
+        assert_eq!(m.read(0x1_0000, 2)?, 0x3344); // the bytes that landed in page 1
 
-        reset();
-        assert_eq!(read(0x2030, 8)?, 0);
-        assert_eq!(read(0x4000, 4)?, 0);
+        m.clear();
+        assert_eq!(m.read(0x2030, 8)?, 0);
+        assert_eq!(m.read(0x4000, 4)?, 0);
         Ok(())
     }
 
     #[test]
     fn rejects_unsupported_width() {
-        assert!(read(0, 3).is_err());
+        assert!(lock().read(0, 3).is_err());
     }
 
     #[test]
     fn rejects_access_past_the_top() {
-        assert!(read(u64::MAX, 8).is_err());
+        assert!(lock().read(u64::MAX, 8).is_err());
     }
 }

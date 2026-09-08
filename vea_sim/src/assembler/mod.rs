@@ -213,9 +213,9 @@ fn sym_width(value: i64, relative: bool) -> Result<usize, String> {
     Ok(n)
 }
 
-/// One assembled instruction: where it sits in the flat image, the bytes it
-/// encoded to (no alignment padding), and the source text it came from. The TUI
-/// renders these as the disassembly / source view.
+// One assembled instruction: where it sits in the flat image, the bytes it
+// encoded to (no alignment padding), and the source text it came from. The TUI
+// renders these as the disassembly / source view.
 #[derive(Debug, Clone)]
 pub struct ListingRow {
     pub addr: u64,
@@ -223,8 +223,8 @@ pub struct ListingRow {
     pub text: String,
 }
 
-/// Assemble source text into a flat load ready image plus a structured listing,
-/// one row per instruction.
+// Assemble source text into a flat load ready image plus a structured listing,
+// one row per instruction.
 pub fn assemble_listing(src: &str) -> Result<(Vec<u8>, Vec<ListingRow>), String> {
     let (insns, syms) = lower(src)?;
     let mut image = Vec::new();
@@ -239,8 +239,8 @@ pub fn assemble_listing(src: &str) -> Result<(Vec<u8>, Vec<ListingRow>), String>
     Ok((image, rows))
 }
 
-/// Assemble source text into a flat load ready image.
-/// Also returns a one line per instruction listing for debug output.
+// Assemble source text into a flat load ready image.
+// Also returns a one line per instruction listing for debug output.
 pub fn assemble(src: &str) -> Result<(Vec<u8>, Vec<String>), String> {
     let (image, rows) = assemble_listing(src)?;
     let listing = rows
@@ -250,7 +250,7 @@ pub fn assemble(src: &str) -> Result<(Vec<u8>, Vec<String>), String> {
     Ok((image, listing))
 }
 
-/// Assemble and hand back each instruction's own bytes with no alignment padding.
+// Assemble and hand back each instruction's own bytes with no alignment padding.
 pub fn assemble_raw(src: &str) -> Result<Vec<Vec<u8>>, String> {
     let (insns, syms) = lower(src)?;
     insns
@@ -564,7 +564,7 @@ fn align_up(v: u64, a: u64) -> u64 {
     (v + a - 1) / a * a
 }
 
-/// Space separated lowercase hex, handy for tests and CLI output.
+// Space separated lowercase hex, handy for tests and CLI output.
 pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
 }

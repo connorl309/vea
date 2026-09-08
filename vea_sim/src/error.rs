@@ -19,10 +19,10 @@
 
 use std::fmt;
 
-/// The single error type. Its `Display` output is the message.
+// The single error type. Its `Display` output is the message.
 pub struct Error(pub String);
 
-/// Every fallible operation in the simulator returns this.
+// Every fallible operation in the simulator returns this.
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl fmt::Display for Error {
@@ -39,9 +39,9 @@ impl fmt::Debug for Error {
 
 impl std::error::Error for Error {}
 
-/// Build a failed `Result` from a format string, on the spot.
-///
-/// `return sim_err!("address {addr:#x} is unmapped");`
+// Build a failed `Result` from a format string, on the spot.
+//
+// `return sim_err!("address {addr:#x} is unmapped");`
 #[macro_export]
 macro_rules! sim_err {
     ($($arg:tt)*) => {

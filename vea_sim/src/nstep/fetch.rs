@@ -49,10 +49,6 @@ impl Processor {
 mod tests {
     use super::*;
     use crate::assembler::assemble_listing;
-    use std::sync::Mutex;
-
-    // Memory is process-global, so these run one at a time.
-    static LOCK: Mutex<()> = Mutex::new(());
 
     fn load(src: &str) -> Processor {
         let (image, _) = assemble_listing(src).expect("assembles");
@@ -63,7 +59,7 @@ mod tests {
 
     #[test]
     fn cold_frame_stalls_then_delivers() {
-        let _g = LOCK.lock().unwrap();
+        let _seq = memory::test_guard();
         let mut p = load("nop\nnop\nhalt\n");
 
         for _ in 0..isa::MEM_READ_DELAY {
@@ -83,7 +79,7 @@ mod tests {
 
     #[test]
     fn walks_frames_and_hits_the_warm_window() {
-        let _g = LOCK.lock().unwrap();
+        let _seq = memory::test_guard();
         let mut p = load("mov r1, #5\nadd r2, r1, r1\nhalt\n");
 
         let mut seen = Vec::new();
@@ -104,7 +100,7 @@ mod tests {
 
     #[test]
     fn unmapped_fetch_faults() {
-        let _g = LOCK.lock().unwrap();
+        let _seq = memory::test_guard();
         memory::reset();
         let mut p = Processor::new();
         p.pc = 0x4000;

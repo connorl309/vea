@@ -71,13 +71,10 @@ impl ICache {
 mod tests {
     use super::*;
     use crate::assembler::assemble_listing;
-    use std::sync::Mutex;
-
-    static LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn hit_after_first_fill_then_slide_near_the_end() {
-        let _g = LOCK.lock().unwrap();
+        let _seq = memory::test_guard();
         let (image, _) = assemble_listing("nop\n".repeat(200).as_str()).unwrap();
         memory::reset();
         memory::load(0, &image).unwrap();
@@ -106,7 +103,7 @@ mod tests {
 
     #[test]
     fn flush_forces_a_refill() {
-        let _g = LOCK.lock().unwrap();
+        let _seq = memory::test_guard();
         memory::reset();
         memory::load(0, &[0u8; 64]).unwrap();
 

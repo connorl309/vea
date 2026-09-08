@@ -8,13 +8,8 @@
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
 
 use vea_sim::{assembler, memory, onestep, shared};
-
-// The simulator's memory is process-global, so the program tests run one at a
-// time under this lock.
-static LOCK: Mutex<()> = Mutex::new(());
 
 const CAP: u64 = 100_000;
 
@@ -43,7 +38,7 @@ struct Prog {
 
 // Assemble `p.source`, run it to halt (or the cap), and assert every checkpoint.
 fn check(p: Prog) {
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = memory::test_guard();
     memory::reset();
     let (image, rows) = assembler::assemble_listing(p.source).expect("program assembles");
     memory::load(0, &image).expect("image loads");

@@ -18,29 +18,29 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Assemble a source file into a flat load ready image
+    // Assemble a source file into a flat load ready image
     Asm(AsmArgs),
-    /// Open a program in the interactive TUI (also the default with no arguments)
+    // Open a program in the interactive TUI (also the default with no arguments)
     Run(RunArgs),
 }
 
 #[derive(Parser)]
 struct AsmArgs {
-    /// Source path, or - to read stdin
+    // Source path, or - to read stdin
     input: String,
-    /// Write raw bytes to this path instead of hex on stdout
+    // Write raw bytes to this path instead of hex on stdout
     #[arg(short, long)]
     output: Option<String>,
-    /// Print the address and encoding of every instruction
+    // Print the address and encoding of every instruction
     #[arg(short, long, visible_alias = "debug")]
     verbose: bool,
 }
 
 #[derive(Parser)]
 struct RunArgs {
-    /// Source path. Omit it and load one from the TUI with `:load <path>`
+    // Source path. Omit it and load one from the TUI with `:load <path>`
     input: Option<String>,
-    /// Address the image is loaded at (decimal, or 0x-prefixed hex)
+    // Address the image is loaded at (decimal, or 0x-prefixed hex)
     #[arg(short, long, default_value = "0", value_parser = parse_addr)]
     load: u64,
 }
