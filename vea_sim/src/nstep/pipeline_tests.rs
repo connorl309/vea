@@ -179,6 +179,43 @@ fn a_chain_of_adjacent_dependencies_all_forward() {
     memory::reset();
 }
 
+#[test]
+fn sum_of_squares_loop_with_running_memory_totals() {
+    let _seq = memory::test_guard();
+    let mut p = load(
+        "mov r1, #0        \n\
+         mov r2, #0        \n\
+         mov r3, #10       \n\
+         mov r4, 0x4000    \n\
+         loop:              \n\
+         add r1, r1, #1    \n\
+         mul r5, r1, r1    \n\
+         add r2, r2, r5    \n\
+         st [r4], r2       \n\
+         add r4, r4, #8    \n\
+         cmp r1, r3        \n\
+         blt loop          \n\
+         halt              \n",
+    );
+
+    p.cycle(2000).expect("no fault");
+    assert!(p.halted(), "loop must terminate and reach halt");
+
+    let want: i64 = (1..=10).map(|i| i * i).sum();
+    assert_eq!(want, 385, "sanity check on the expected value itself");
+    assert_eq!(p.regs[1], 10, "loop counter");
+    assert_eq!(p.regs[2] as i64, want, "accumulated sum of squares");
+    assert_eq!(p.regs[3], 10);
+    assert_eq!(p.regs[4], 0x4000 + 10 * 8, "pointer walked one slot per iteration");
+
+    // First iteration's partial sum (1) and the final total (385), each read
+    // back from the memory slot that iteration's `st` actually wrote.
+    assert_eq!(memory::dump(0x4000, 8), 1i64.to_be_bytes().to_vec());
+    assert_eq!(memory::dump(0x4000 + 9 * 8, 8), (want as u64).to_be_bytes().to_vec());
+
+    memory::reset();
+}
+
 // A narrow, sign-extended load has to come back through the whole pipe with
 // the sign bit actually extended, not just the raw byte.
 #[test]

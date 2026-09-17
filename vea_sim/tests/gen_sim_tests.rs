@@ -321,6 +321,14 @@ fn sum_1_to_n() {
     });
 }
 
+#[test]
+fn sum_of_squares() {
+    check(Prog {
+        source: src!("sum_of_squares.s"),
+        ..Default::default()
+    });
+}
+
 // ---- freshness -----------------------------------------------------------
 
 // (file name, md5sum) for every tests/*.s when these tests were generated.
@@ -337,6 +345,7 @@ const SOURCES: &[(&str, &str)] = &[
     ("signed_vs_unsigned.s", "6b1f33d0ced0a463fe0095ceda30a816"),
     ("strlen.s", "9a7436abec88243086625bc001371239"),
     ("sum_1_to_n.s", "04de3223d4fc14763541cfcf9305b80b"),
+    ("sum_of_squares.s", "dfac2ac9489a2f57259b49eeab2647ec"),
 ];
 
 // Shell out to md5sum (the same digest the generator baked in).
