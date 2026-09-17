@@ -38,6 +38,32 @@ pub struct IfId {
     pub bytes: [u8; isa::MAX_INSN_BYTES],
 }
 
+// ID/EX pipeline stage. By the time an instruction lands here its registers
+// and condition codes have already been read, so Execute just works off these
+// values instead of reaching back into the register file itself.
+#[derive(Clone)]
+pub struct IdEx {
+    pub pc: u64,
+    pub op: DecodedOp,
+}
+
+// One decoded instruction, operands and all. This is different from Onestep's
+// approach because unlike onestep, I am trying to be much more accurate here,
+// so I will explicitly break everything out
+#[derive(Clone, Debug, PartialEq)]
+pub enum DecodedOp {
+    Nop,
+    Halt,
+    Mov { rd: usize, src: i64 },
+    Not { rd: usize, src: i64 },
+    Cmp { a: i64, b: i64, signed: bool },
+    Alu { rd: usize, nibble: u8, a: i64, b: i64 },
+    Branch { taken: bool, target: u64 }, // both b* and jmp resolve here
+    Load { rd: usize, addr: u64, width: usize, sext: bool },
+    Store { addr: u64, width: usize, value: u64 },
+    Trap { vector: u64 },
+}
+
 // Byte length of the instruction frame at `bytes[0]`. Every frame is 2 bytes of
 // opcode + opinfo; the opinfo high nibble carries the immediate payload length
 // and the opcode says how many register-operand bytes sit before it. Fetch
@@ -60,13 +86,11 @@ pub(crate) fn frame_len(bytes: &[u8]) -> error::Result<u64> {
     })
 }
 
-// The pipelined processor. Only Fetch and the IF/ID latch are wired so far:
-// `tick()` runs all four stages back to front, but Decode/Execute/Writeback are
-// stubs that pass bubbles through and stop the run when a real instruction
-// reaches them.
+// The pipelined processor. Fetch and Decode are wired; Execute/Writeback are
+// still stubs that pass bubbles through and do nothing else. `tick()` runs the
+// four stages back to front so each one reads the latch the stage ahead of it
+// left last cycle before that latch gets overwritten.
 pub struct Processor {
-    // Fetch pointer. Until Writeback and branch resolution exist this doubles
-    // as the architectural PC and just walks forward one frame at a time.
     pub pc: u64,
     pub cycles: u64,
     pub completed_instrs: u64,
@@ -77,6 +101,7 @@ pub struct Processor {
     if_id: Option<IfId>,
     // Cycles left on an i-cache refill. Fetch holds while non-zero.
     fetch_stall: u64,
+    id_ex: Option<IdEx>,
 }
 
 impl Processor {
@@ -91,6 +116,7 @@ impl Processor {
             icache: icache::ICache::new(),
             if_id: None,
             fetch_stall: 0,
+            id_ex: None,
         }
     }
 

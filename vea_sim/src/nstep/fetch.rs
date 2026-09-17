@@ -34,9 +34,9 @@ impl Processor {
         Ok(())
     }
 
-    // Point Fetch at `target` and drop everything speculative behind it. Branch
-    // resolution calls this from the back of the pipe.
-    #[allow(dead_code)] // TODO wire up when Execute/Writeback resolve branches
+    // Point Fetch at `target` and drop everything speculative behind it.
+    // Decode calls this the instant a branch resolves taken, which happens
+    // before this same cycle's fetch() runs
     pub(crate) fn redirect_fetch(&mut self, target: u64) {
         self.pc = target;
         self.if_id = None;
