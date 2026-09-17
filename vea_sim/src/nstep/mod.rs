@@ -12,6 +12,7 @@ pub use crate::isa;
 use crate::error;
 use crate::shared;
 use crate::sim_err;
+use std::fmt;
 
 mod fetch;
 mod decode;
@@ -65,6 +66,53 @@ pub enum DecodedOp {
     Trap { vector: u64 },
 }
 
+// How the ID/EX pane in the TUI shows what's decoded - short, not a
+// disassembly. `alu_symbol` below does the same for the op nibble.
+impl fmt::Display for DecodedOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DecodedOp::Nop => write!(f, "nop"),
+            DecodedOp::Halt => write!(f, "halt"),
+            DecodedOp::Mov { rd, src } => write!(f, "r{rd} <- {src:#x}"),
+            DecodedOp::Not { rd, src } => write!(f, "r{rd} <- !{src:#x}"),
+            DecodedOp::Cmp { a, b, signed } => {
+                write!(f, "cmp{} {a:#x}, {b:#x}", if *signed { ".s" } else { "" })
+            }
+            DecodedOp::Alu { rd, nibble, a, b } => {
+                write!(f, "r{rd} <- {a:#x} {} {b:#x}", alu_symbol(*nibble))
+            }
+            DecodedOp::Branch { taken, target } => {
+                write!(f, "-> {target:#x} ({})", if *taken { "taken" } else { "not taken" })
+            }
+            DecodedOp::Load { rd, addr, width, sext } => {
+                write!(f, "r{rd} <- [{addr:#x}]{} ({width}B)", if *sext { " sext" } else { "" })
+            }
+            DecodedOp::Store { addr, width, value } => {
+                write!(f, "[{addr:#x}] <- {value:#x} ({width}B)")
+            }
+            DecodedOp::Trap { vector } => write!(f, "trap {vector:#x}"),
+        }
+    }
+}
+
+// A short symbol for an ALU op's low nibble. Display only - execute.rs has
+// its own copy of the actual opcode table.
+fn alu_symbol(nibble: u8) -> &'static str {
+    match nibble {
+        0x0 => "+",
+        0x1 => "-",
+        0x2 => "&",
+        0x3 => "|",
+        0x5 => "^",
+        0x6 => "<<",
+        0x7 => ">>",
+        0x8 => ">>a",
+        0x9 => "*",
+        0xA => "/",
+        _ => "?",
+    }
+}
+
 // EX/WB pipeline stage. Execute has already done whatever math or memory
 // access the instruction needed; this is just the leftover architectural
 // effect for Writeback to apply. Decode also peeks at this to forward a
@@ -86,6 +134,20 @@ pub enum Commit {
     Reg { rd: usize, value: i64 },
     Flags { z: bool, n: bool, c: bool, v: bool },
     Halt,
+}
+
+// How the EX/WB pane in the TUI shows what's about to commit.
+impl fmt::Display for Commit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Commit::Nothing => write!(f, "\u{2014}"),
+            Commit::Reg { rd, value } => write!(f, "r{rd} <- {value:#x}"),
+            Commit::Flags { z, n, c, v } => {
+                write!(f, "flags z{} n{} c{} v{}", *z as u8, *n as u8, *c as u8, *v as u8)
+            }
+            Commit::Halt => write!(f, "halt"),
+        }
+    }
 }
 
 // Byte length of the instruction frame at `bytes[0]`. Every frame is 2 bytes of
@@ -197,9 +259,26 @@ impl Processor {
                 v: self.cc.overflow(),
             },
             completed_instrs: self.completed_instrs,
+            cycles: self.cycles,
             halted: self.halted,
             fault,
+            pipeline: Some(self.pipeline()),
         });
+    }
+
+    // A snapshot of what's sitting in each latch right now, for the TUI's
+    // pipeline pane. IF/ID hasn't been decoded yet, so its description is
+    // just the frame's own bytes rather than anything semantic.
+    fn pipeline(&self) -> shared::Pipeline {
+        let slot = |pc: u64, desc: String| shared::StageSlot { pc, desc };
+        shared::Pipeline {
+            if_id: self.if_id.as_ref().and_then(|frame| {
+                let len = frame_len(&frame.bytes).ok()? as usize;
+                Some(slot(frame.pc, hex(&frame.bytes[..len])))
+            }),
+            id_ex: self.id_ex.as_ref().map(|latch| slot(latch.pc, latch.op.to_string())),
+            ex_wb: self.ex_wb.as_ref().map(|latch| slot(latch.pc, latch.commit.to_string())),
+        }
     }
 }
 

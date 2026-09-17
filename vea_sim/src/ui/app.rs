@@ -6,12 +6,13 @@
 
 use ratatui::crossterm::event::KeyCode;
 
-// Which pane has the keyboard. In the wide layout all three are on screen and
+// Which pane has the keyboard. In the wide layout all four are on screen and
 // this picks the scroll target; narrow, it also picks the visible tab.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
     Disasm,
     Registers,
+    Pipeline,
     Memory,
 }
 
@@ -19,12 +20,38 @@ impl Pane {
     fn next(self) -> Pane {
         match self {
             Pane::Disasm => Pane::Registers,
-            Pane::Registers => Pane::Memory,
+            Pane::Registers => Pane::Pipeline,
+            Pane::Pipeline => Pane::Memory,
             Pane::Memory => Pane::Disasm,
         }
     }
     fn prev(self) -> Pane {
-        self.next().next()
+        self.next().next().next()
+    }
+}
+
+// Which simulator backend is driving the loaded program. Lives on `App`
+// (rather than being read back off whatever `Sim` holds) so it's still
+// meaningful with nothing loaded, and so a fresh `:load` knows which engine
+// to boot under.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Engine {
+    OneStep,
+    NStep,
+}
+
+impl Engine {
+    pub fn toggled(self) -> Engine {
+        match self {
+            Engine::OneStep => Engine::NStep,
+            Engine::NStep => Engine::OneStep,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Engine::OneStep => "onestep",
+            Engine::NStep => "nstep",
+        }
     }
 }
 
@@ -49,6 +76,7 @@ pub enum Action {
     Step(u64),
     ToggleRun,
     Reload,
+    ToggleEngine,
     Command(String),
 }
 
@@ -60,6 +88,9 @@ pub struct App {
     pub radix: Radix,
     pub mode: Mode,
     pub show_help: bool,
+    // Which simulator backend the next load/reload boots. Switching it with a
+    // program already open restarts that program under the new engine.
+    pub engine: Engine,
     // vim-style numeric prefix: `500s` steps 500 instructions.
     pub count: Option<u64>,
     // Last command result, shown in the footer.
@@ -92,6 +123,7 @@ impl App {
             radix: Radix::Hex,
             mode: Mode::Normal,
             show_help: false,
+            engine: Engine::OneStep,
             count: None,
             message: None,
             message_is_error: false,
@@ -145,6 +177,7 @@ impl App {
             KeyCode::Char('s') | KeyCode::Char('.') => Action::Step(n),
             KeyCode::Char(' ') | KeyCode::Char('c') => Action::ToggleRun,
             KeyCode::Char('R') => Action::Reload,
+            KeyCode::Char('E') => Action::ToggleEngine,
             KeyCode::Char(':') => {
                 self.mode = Mode::Command(String::new());
                 Action::Nothing
@@ -237,7 +270,7 @@ impl App {
         match self.focus {
             Pane::Disasm => self.disasm_rows.max(1) as i64,
             Pane::Memory => self.mem_rows.max(1) as i64,
-            Pane::Registers => 0,
+            Pane::Registers | Pane::Pipeline => 0,
         }
     }
 
@@ -257,7 +290,7 @@ impl App {
                 let delta = self.mem_stride.max(1) as i64 * rows;
                 self.mem_base = self.mem_base.saturating_add_signed(delta) & self.mem_mask();
             }
-            Pane::Registers => {}
+            Pane::Registers | Pane::Pipeline => {}
         }
     }
 }

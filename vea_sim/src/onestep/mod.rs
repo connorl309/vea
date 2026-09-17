@@ -15,9 +15,18 @@ use crate::memory;
 use crate::shared;
 use crate::sim_err;
 
+// onestep does fetch, decode, execute and writeback for an instruction all
+// within its one "cycle" instead of overlapping them across separate ones the
+// way nstep does. Charging 4 clock cycles per retired instruction - one per
+// stage nstep actually pipelines - puts `cycles` on the same time-unit scale
+// as nstep's, so the two are comparable: same total work, the difference is
+// only whether it's overlapped.
+const CYCLES_PER_INSTR: u64 = 4;
+
 // Model of the processor for sim purposes.
 pub struct Processor {
     pub pc: u64,
+    pub cycles: u64,
     pub completed_instrs: u64,
     halted: bool,
     regs: isa::RegisterFile,
@@ -28,6 +37,7 @@ impl Processor {
     pub fn new() -> Self {
         Processor {
             pc: 0,
+            cycles: 0,
             completed_instrs: 0,
             halted: false,
             regs: [0u64; NUM_REGS],
@@ -73,8 +83,10 @@ impl Processor {
                 v: self.cc.overflow(),
             },
             completed_instrs: self.completed_instrs,
+            cycles: self.cycles,
             halted: self.halted,
             fault,
+            pipeline: None,
         });
     }
 
@@ -154,6 +166,7 @@ impl Processor {
         };
 
         self.completed_instrs += 1;
+        self.cycles += CYCLES_PER_INSTR;
 
         self.pc = match step {
             Step::Next(len) => align_up(pc + len, isa::ALIGNMENT),

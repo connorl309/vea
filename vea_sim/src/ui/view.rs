@@ -12,7 +12,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 
 use crate::isa::NUM_REGS;
 use crate::memory;
-use crate::shared::{Shared, Snapshot};
+use crate::shared::{Shared, Snapshot, StageSlot};
 
 use super::app::{App, Mode, Pane, Radix};
 
@@ -64,6 +64,7 @@ fn header(f: &mut Frame, area: Rect, app: &App, sh: &Shared) {
     };
     let name = sh.source.as_deref().unwrap_or("(no program)");
     let follow = if app.follow_pc { "follow" } else { "free" };
+    let cpi = s.cycles as f64 / s.completed_instrs.max(1) as f64;
 
     let m = memory::stats();
     let mem = if m.pages == 0 {
@@ -87,7 +88,12 @@ fn header(f: &mut Frame, area: Rect, app: &App, sh: &Shared) {
             format!("{label:<8}"),
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ),
+        Span::styled(format!("[{}]  ", app.engine.label()), Style::default().fg(Color::Magenta)),
         Span::raw(format!("pc {:#018x}   instr {}   ", s.pc, s.completed_instrs)),
+        Span::styled(
+            format!("cycles {}  (cpi {cpi:.2})   ", s.cycles),
+            Style::default().fg(Color::Yellow),
+        ),
         Span::styled(mem, Style::default().fg(Color::Gray)),
         Span::styled(format!("   [{follow}]"), Style::default().fg(DIM)),
     ]);
@@ -156,6 +162,7 @@ fn keybar(f: &mut Frame, area: Rect) {
         ("f", "follow"),
         ("x", "radix"),
         ("R", "reload"),
+        ("E", "engine"),
     ] {
         spans.extend(key(pair.0, pair.1));
     }
@@ -165,9 +172,15 @@ fn keybar(f: &mut Frame, area: Rect) {
 fn wide_body(f: &mut Frame, area: Rect, app: &mut App, sh: &Shared) {
     let cols = Layout::horizontal([Constraint::Min(30), Constraint::Length(48)]).split(area);
     disasm(f, cols[0], app, sh);
-    let right = Layout::vertical([Constraint::Length(22), Constraint::Min(4)]).split(cols[1]);
+    let right = Layout::vertical([
+        Constraint::Length(22),
+        Constraint::Length(5),
+        Constraint::Min(4),
+    ])
+    .split(cols[1]);
     registers(f, right[0], app, &sh.snapshot);
-    memory(f, right[1], app, &sh.snapshot);
+    pipeline(f, right[1], app, &sh.snapshot);
+    memory(f, right[2], app, &sh.snapshot);
 }
 
 fn tab_body(f: &mut Frame, area: Rect, app: &mut App, sh: &Shared) {
@@ -177,6 +190,7 @@ fn tab_body(f: &mut Frame, area: Rect, app: &mut App, sh: &Shared) {
     for (name, pane) in [
         ("disasm", Pane::Disasm),
         ("registers", Pane::Registers),
+        ("pipeline", Pane::Pipeline),
         ("memory", Pane::Memory),
     ] {
         let style = if app.focus == pane {
@@ -192,8 +206,47 @@ fn tab_body(f: &mut Frame, area: Rect, app: &mut App, sh: &Shared) {
     match app.focus {
         Pane::Disasm => disasm(f, rows[1], app, sh),
         Pane::Registers => registers(f, rows[1], app, &sh.snapshot),
+        Pane::Pipeline => pipeline(f, rows[1], app, &sh.snapshot),
         Pane::Memory => memory(f, rows[1], app, &sh.snapshot),
     }
+}
+
+// IF/ID, ID/EX, EX/WB - what nstep currently has in flight. onestep has no
+// pipeline, so `s.pipeline` is `None` and this just explains that instead.
+fn pipeline(f: &mut Frame, area: Rect, app: &App, s: &Snapshot) {
+    let block = panel(" pipeline ", app.focus == Pane::Pipeline);
+
+    let Some(p) = &s.pipeline else {
+        let hint = Paragraph::new(vec![
+            Line::from(""),
+            Line::from("  onestep retires one instruction per"),
+            Line::from("  cycle \u{2014} no pipeline stages to show"),
+        ])
+        .block(block);
+        f.render_widget(hint, area);
+        return;
+    };
+
+    let stage_line = |name: &str, slot: &Option<StageSlot>| -> Line<'static> {
+        match slot {
+            Some(slot) => Line::from(vec![
+                Span::styled(format!("{name:<6}"), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("{:#010x}  ", slot.pc), Style::default().fg(Color::Gray)),
+                Span::styled(slot.desc.clone(), Style::default().fg(Color::White)),
+            ]),
+            None => Line::from(vec![
+                Span::styled(format!("{name:<6}"), Style::default().fg(DIM)),
+                Span::styled("bubble", Style::default().fg(DIM)),
+            ]),
+        }
+    };
+
+    let lines = vec![
+        stage_line("IF/ID", &p.if_id),
+        stage_line("ID/EX", &p.id_ex),
+        stage_line("EX/WB", &p.ex_wb),
+    ];
+    f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 fn disasm(f: &mut Frame, area: Rect, app: &mut App, sh: &Shared) {
@@ -385,6 +438,7 @@ fn help(f: &mut Frame, area: Rect) {
         ("s  .", "step (prefix a count, e.g. 500s)"),
         ("space  c", "run / pause"),
         ("R", "reload the program from disk"),
+        ("E", "switch onestep / nstep (restarts)"),
         ("Tab", "cycle panes"),
         ("j k  arrows", "scroll the focused pane"),
         ("d u", "page down / up"),
@@ -406,7 +460,7 @@ fn help(f: &mut Frame, area: Rect) {
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled("  commands  ", Style::default().fg(ACCENT)),
-        Span::raw("load  reload  reset  run  step  goto  pc  quit"),
+        Span::raw("load  reload  reset  run  step  goto  pc  engine  quit"),
     ]));
 
     f.render_widget(Clear, rect);

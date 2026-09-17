@@ -1,16 +1,18 @@
 // ui/mod.rs
 
 /**
- * The interactive terminal UI for the assembler + onestep simulator.
+ * The interactive terminal UI for the assembler + both simulator backends.
  *
- * All ratatui and crossterm code lives under this module. The simulator only
- * talks to the UI through `crate::shared`; no widget, frame, or event type is
- * threaded back into the `onestep` execution path. The event loop here owns the
- * `Processor` and is the one place that calls `cycle()`.
+ * All ratatui and crossterm code lives under this module. Neither simulator
+ * ever sees a widget, frame, or event type - they only talk to the UI through
+ * `crate::shared`. `Cpu` below is the one place that knows both `onestep` and
+ * `nstep` exist; the event loop just calls its `cycle()`/`halted()` and
+ * doesn't care which engine is actually running. `:engine` (or `E`) switches
+ * between them, restarting whatever's loaded under the other one.
  *
  * The `:` command line drives everything the simulator can do from inside the
  * TUI: `load <path>`, `reload`, `reset`, `run`, `step [n]`, `goto <addr>`,
- * `pc <addr>`, `quit`.
+ * `pc <addr>`, `engine [onestep|nstep]`, `quit`.
  */
 
 mod app;
@@ -24,10 +26,11 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers
 use crate::assembler;
 use crate::error::{Error, Result};
 use crate::memory;
-use crate::onestep::Processor;
+use crate::nstep;
+use crate::onestep;
 use crate::shared;
 
-use app::{Action, App};
+use app::{Action, App, Engine};
 
 // Instructions advanced per free-run frame before the loop returns to repaint
 // and poll input. Small enough that an infinite program still pauses instantly.
@@ -41,7 +44,7 @@ pub fn run(initial: Option<&str>, load_addr: u64) -> Result<()> {
     let mut sim: Option<Sim> = None;
 
     match initial {
-        Some(path) => match Sim::load(path, load_addr) {
+        Some(path) => match Sim::load(path, load_addr, app.engine) {
             Ok(s) => {
                 app.info(format!("loaded {path}"));
                 sim = Some(s);
@@ -49,7 +52,7 @@ pub fn run(initial: Option<&str>, load_addr: u64) -> Result<()> {
             Err(e) => app.error(e.to_string()),
         },
         None => {
-            Processor::new().publish();
+            Cpu::new(app.engine).publish();
             app.info("no program \u{2014} type  :load <path>".into());
         }
     }
@@ -93,6 +96,7 @@ fn event_loop(term: &mut term::Tui, app: &mut App, sim: &mut Option<Sim>) -> Res
                         Action::Step(n) => step(sim, app, n),
                         Action::ToggleRun => toggle_run(sim, app),
                         Action::Reload => reload(sim, app),
+                        Action::ToggleEngine => toggle_engine(sim, app),
                         Action::Command(line) => {
                             if command(&line, sim, app) == Flow::Quit {
                                 return Ok(());
@@ -121,39 +125,87 @@ fn event_loop(term: &mut term::Tui, app: &mut App, sim: &mut Option<Sim>) -> Res
     }
 }
 
+// ---- the simulator backend ---------------------------------------------
+
+// Whichever engine is actually running. Same public shape either way
+// (`cycle`, `halted`, `pc`, `publish`) - the event loop and everything below
+// it drives this without caring which variant it got.
+enum Cpu {
+    OneStep(onestep::Processor),
+    NStep(nstep::Processor),
+}
+
+impl Cpu {
+    fn new(engine: Engine) -> Cpu {
+        match engine {
+            Engine::OneStep => Cpu::OneStep(onestep::Processor::new()),
+            Engine::NStep => Cpu::NStep(nstep::Processor::new()),
+        }
+    }
+
+    fn set_pc(&mut self, addr: u64) {
+        match self {
+            Cpu::OneStep(p) => p.pc = addr,
+            Cpu::NStep(p) => p.pc = addr,
+        }
+    }
+
+    fn cycle(&mut self, n: u64) -> Result<()> {
+        match self {
+            Cpu::OneStep(p) => p.cycle(n),
+            Cpu::NStep(p) => p.cycle(n),
+        }
+    }
+
+    fn halted(&self) -> bool {
+        match self {
+            Cpu::OneStep(p) => p.halted(),
+            Cpu::NStep(p) => p.halted(),
+        }
+    }
+
+    fn publish(&self) {
+        match self {
+            Cpu::OneStep(p) => p.publish(),
+            Cpu::NStep(p) => p.publish(),
+        }
+    }
+}
+
 // ---- the loaded program -------------------------------------------------
 
 // One open program: its processor, the image kept for reload/reset, and where
 // it lives in memory.
 struct Sim {
-    cpu: Processor,
+    cpu: Cpu,
     image: Vec<u8>,
     path: String,
     load_addr: u64,
 }
 
 impl Sim {
-    fn load(path: &str, load_addr: u64) -> Result<Sim> {
+    fn load(path: &str, load_addr: u64, engine: Engine) -> Result<Sim> {
         let src = std::fs::read_to_string(path).map_err(|e| Error(format!("{path}: {e}")))?;
         let (image, rows) = assembler::assemble_listing(&src).map_err(Error)?;
         shared::install_program(rows, load_addr, path.to_string());
-        let cpu = boot(&image, load_addr)?;
+        let cpu = boot(&image, load_addr, engine)?;
         Ok(Sim { cpu, image, path: path.to_string(), load_addr })
     }
 
-    fn reboot(&mut self) -> Result<()> {
-        self.cpu = boot(&self.image, self.load_addr)?;
+    fn reboot(&mut self, engine: Engine) -> Result<()> {
+        self.cpu = boot(&self.image, self.load_addr, engine)?;
         Ok(())
     }
 }
 
 // Load `image` at `load_addr` into a cleared memory and hand back a processor
-// sitting at the entry point, with an initial snapshot published.
-fn boot(image: &[u8], load_addr: u64) -> Result<Processor> {
+// of the given engine sitting at the entry point, with an initial snapshot
+// published.
+fn boot(image: &[u8], load_addr: u64, engine: Engine) -> Result<Cpu> {
     memory::clear();
     memory::load(load_addr, image)?;
-    let mut cpu = Processor::new();
-    cpu.pc = load_addr;
+    let mut cpu = Cpu::new(engine);
+    cpu.set_pc(load_addr);
     cpu.publish();
     Ok(cpu)
 }
@@ -182,7 +234,7 @@ fn toggle_run(sim: &mut Option<Sim>, app: &mut App) {
 fn reload(sim: &mut Option<Sim>, app: &mut App) {
     app.running = false;
     match sim {
-        Some(s) => match Sim::load(&s.path, s.load_addr) {
+        Some(s) => match Sim::load(&s.path, s.load_addr, app.engine) {
             Ok(fresh) => {
                 app.info(format!("reloaded {}", fresh.path));
                 *s = fresh;
@@ -191,6 +243,26 @@ fn reload(sim: &mut Option<Sim>, app: &mut App) {
         },
         None => app.error("no program loaded".into()),
     }
+}
+
+// Switch backends. With a program open this restarts it fresh under the new
+// engine - the two keep entirely different internal state (nstep's pipeline
+// latches have no onestep equivalent), so there's no sensible way to carry
+// an in-progress run across the swap.
+fn set_engine(engine: Engine, sim: &mut Option<Sim>, app: &mut App) {
+    app.engine = engine;
+    app.running = false;
+    match sim {
+        Some(s) => match s.reboot(engine) {
+            Ok(()) => app.info(format!("switched to {} (restarted)", engine.label())),
+            Err(e) => app.error(e.to_string()),
+        },
+        None => app.info(format!("engine set to {} \u{2014} no program loaded", engine.label())),
+    }
+}
+
+fn toggle_engine(sim: &mut Option<Sim>, app: &mut App) {
+    set_engine(app.engine.toggled(), sim, app);
 }
 
 // ---- command line ----------------------------------------------------
@@ -214,7 +286,7 @@ fn command(line: &str, sim: &mut Option<Sim>, app: &mut App) -> Flow {
         "load" | "l" | "open" | "e" => load(rest, sim, app),
         "reload" | "r" => reload(sim, app),
         "reset" => match sim {
-            Some(s) => match s.reboot() {
+            Some(s) => match s.reboot(app.engine) {
                 Ok(()) => {
                     app.running = false;
                     app.info("reset".into());
@@ -234,12 +306,18 @@ fn command(line: &str, sim: &mut Option<Sim>, app: &mut App) -> Flow {
         },
         "pc" => match (sim.as_mut(), parse_addr(rest)) {
             (Some(s), Some(addr)) => {
-                s.cpu.pc = addr;
+                s.cpu.set_pc(addr);
                 s.cpu.publish();
                 app.info(format!("pc = {addr:#x}"));
             }
             (None, _) => app.error("no program loaded".into()),
             (_, None) => app.error(format!("bad address: {rest}")),
+        },
+        "engine" | "eng" => match rest {
+            "" => toggle_engine(sim, app),
+            "onestep" | "one" | "1" => set_engine(Engine::OneStep, sim, app),
+            "nstep" | "n" => set_engine(Engine::NStep, sim, app),
+            other => app.error(format!("unknown engine: {other} (try onestep or nstep)")),
         },
         "follow" => {
             app.follow_pc = true;
@@ -262,7 +340,7 @@ fn load(path: &str, sim: &mut Option<Sim>, app: &mut App) {
         app.error("usage: load <path>".into());
         return;
     }
-    match Sim::load(path, app.load_addr) {
+    match Sim::load(path, app.load_addr, app.engine) {
         Ok(s) => {
             app.running = false;
             app.info(format!("loaded {path}"));

@@ -28,6 +28,25 @@ impl Flags {
     const CLEAR: Flags = Flags { z: false, n: false, c: false, v: false };
 }
 
+// One occupied pipeline latch: the pc of the instruction sitting there and a
+// short human-readable description of what it holds. Only nstep populates
+// these - the UI never sees a `DecodedOp` or a `Commit`, just the string each
+// one formats itself as.
+#[derive(Clone)]
+pub struct StageSlot {
+    pub pc: u64,
+    pub desc: String,
+}
+
+// What's currently in flight in nstep's pipeline, one slot per latch. A slot
+// of `None` is a bubble - nothing fetched/decoded/executed that cycle.
+#[derive(Clone)]
+pub struct Pipeline {
+    pub if_id: Option<StageSlot>,
+    pub id_ex: Option<StageSlot>,
+    pub ex_wb: Option<StageSlot>,
+}
+
 // Everything the UI shows about the running machine
 #[derive(Clone)]
 pub struct Snapshot {
@@ -35,9 +54,18 @@ pub struct Snapshot {
     pub regs: [u64; NUM_REGS],
     pub flags: Flags,
     pub completed_instrs: u64,
+    // Clock cycles spent to reach `completed_instrs`. Comparable across
+    // engines: onestep charges 4 per instruction (fetch/decode/execute/
+    // writeback done serially, one "cycle"), nstep counts the actual ticks -
+    // same total work, so this is where pipelining's payoff actually shows.
+    pub cycles: u64,
     pub halted: bool,
     // Set when the last `cycle` ended on a fault; carries the message.
     pub fault: Option<String>,
+    // `Some` only from nstep. onestep retires one instruction per cycle and
+    // has nothing pipeline-shaped to report, so this is how the UI tells
+    // which engine published the snapshot without a separate flag.
+    pub pipeline: Option<Pipeline>,
 }
 
 impl Snapshot {
@@ -46,8 +74,10 @@ impl Snapshot {
         regs: [0; NUM_REGS],
         flags: Flags::CLEAR,
         completed_instrs: 0,
+        cycles: 0,
         halted: false,
         fault: None,
+        pipeline: None,
     };
 }
 
