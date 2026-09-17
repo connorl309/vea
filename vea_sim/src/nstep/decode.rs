@@ -2,7 +2,7 @@ use crate::assembler::{
     BR_ALWAYS, BR_EQ, BR_GE, BR_GT, BR_LE, BR_LT, BR_NE, LS_SEXT, OPINFO_FLAG_ALSO_IMMEDIATE,
 };
 use crate::isa;
-use crate::nstep::{DecodedOp, IdEx, Processor};
+use crate::nstep::{Commit, DecodedOp, ExWb, IdEx, Processor};
 use crate::{error, sim_err};
 
 impl Processor {
@@ -19,6 +19,9 @@ impl Processor {
         let op = self.decode_op(frame.pc, &frame.bytes)?;
         if let DecodedOp::Branch { taken: true, target } = op {
             self.redirect_fetch(target);
+        }
+        if op == DecodedOp::Halt {
+            self.halt_pending = true;
         }
         self.id_ex = Some(IdEx { pc: frame.pc, op });
         Ok(())
@@ -42,7 +45,7 @@ impl Processor {
 
             // cmp / cmp.s: a named register against a register or immediate
             0x20 | 0x21 => {
-                let a = self.regs[self.reg_at(pc, bytes, 2)?] as i64;
+                let a = self.reg_value(self.reg_at(pc, bytes, 2)?) as i64;
                 let (b, _) = self.source(bytes, 3, opinfo);
                 DecodedOp::Cmp { a, b, signed: opcode == 0x21 }
             }
@@ -51,7 +54,7 @@ impl Processor {
             // is just the opcode's low nibble, same as onestep's alu().
             0x10..=0x13 | 0x15..=0x1A => {
                 let rd = self.reg_at(pc, bytes, 2)?;
-                let a = self.regs[self.reg_at(pc, bytes, 3)?] as i64;
+                let a = self.reg_value(self.reg_at(pc, bytes, 3)?) as i64;
                 let (b, _) = self.source(bytes, 4, opinfo);
                 DecodedOp::Alu { rd, nibble: opcode & 0x0F, a, b }
             }
@@ -59,10 +62,13 @@ impl Processor {
             // b / beq / bne / blt / bge / bgt / ble: figure out both taken and
             // target now. An immediate is relative to this frame's own pc; a
             // bare register is always absolute.
-            0x30 => DecodedOp::Branch {
-                taken: predicate(opinfo & 0x0F, &self.cc)?,
-                target: self.branch_target(pc, bytes, opinfo, false)?,
-            },
+            0x30 => {
+                let (z, n, v) = self.cc_bits();
+                DecodedOp::Branch {
+                    taken: predicate(opinfo & 0x0F, z, n, v)?,
+                    target: self.branch_target(pc, bytes, opinfo, false)?,
+                }
+            }
 
             // jmp: same target math, just unconditional and absolute
             0x31 => DecodedOp::Branch {
@@ -76,7 +82,7 @@ impl Processor {
             0x40 | 0x41 => {
                 let flags = opinfo & 0x0F;
                 let reg = self.reg_at(pc, bytes, 2)?;
-                let base = self.regs[self.reg_at(pc, bytes, 3)?];
+                let base = self.reg_value(self.reg_at(pc, bytes, 3)?);
                 let (offset, _) = self.source(bytes, 4, opinfo);
                 let addr = (base as i64).wrapping_add(offset) as u64;
                 let width = match (flags >> 1) & 0b11 {
@@ -88,7 +94,7 @@ impl Processor {
                 if opcode == 0x40 {
                     DecodedOp::Load { rd: reg, addr, width, sext: flags & LS_SEXT != 0 }
                 } else {
-                    DecodedOp::Store { addr, width, value: self.regs[reg] }
+                    DecodedOp::Store { addr, width, value: self.reg_value(reg) }
                 }
             }
 
@@ -109,7 +115,7 @@ impl Processor {
     ) -> error::Result<u64> {
         let plen = opinfo >> 4;
         Ok(if plen == 0 {
-            self.regs[self.reg_at(pc, bytes, 2)?]
+            self.reg_value(self.reg_at(pc, bytes, 2)?)
         } else {
             // force the add to be signed despite PC tracked as u64
             let offset = imm_at(bytes, 2, plen);
@@ -127,7 +133,7 @@ impl Processor {
             let n = (opinfo >> 4) as usize;
             (imm_at(bytes, at, n as u8), n)
         } else {
-            (self.regs[bytes[at] as usize] as i64, 1)
+            (self.reg_value(bytes[at] as usize) as i64, 1)
         }
     }
 
@@ -141,18 +147,39 @@ impl Processor {
         }
         Ok(r)
     }
+
+    // A register's value, forwarded from EX/WB if that's where it actually
+    // lives right now. The instruction immediately ahead of us hasn't reached
+    // `regs` yet, so we can't safely blindly read from the register file.
+    fn reg_value(&self, reg: usize) -> u64 {
+        if let Some(ExWb { commit: Commit::Reg { rd, value }, .. }) = self.ex_wb {
+            if rd == reg {
+                return value as u64;
+            }
+        }
+        self.regs[reg]
+    }
+
+    // Same forwarding
+    fn cc_bits(&self) -> (bool, bool, bool) {
+        if let Some(ExWb { commit: Commit::Flags { z, n, v, .. }, .. }) = self.ex_wb {
+            return (z, n, v);
+        }
+        (self.cc.zero(), self.cc.neg(), self.cc.overflow())
+    }
 }
 
-// Same as onestep
-fn predicate(pred: u8, cc: &isa::ConditionCodes) -> error::Result<bool> {
+// Same as onestep, just taking the bits directly instead of a ConditionCodes
+// so the caller can hand it a forwarded value instead of `self.cc`.
+fn predicate(pred: u8, z: bool, n: bool, v: bool) -> error::Result<bool> {
     Ok(match pred {
         BR_ALWAYS => true,
-        BR_EQ => cc.zero(),
-        BR_NE => !cc.zero(),
-        BR_LT => cc.neg() != cc.overflow(),
-        BR_GE => cc.neg() == cc.overflow(),
-        BR_GT => !cc.zero() && cc.neg() == cc.overflow(),
-        BR_LE => cc.zero() || cc.neg() != cc.overflow(),
+        BR_EQ => z,
+        BR_NE => !z,
+        BR_LT => n != v,
+        BR_GE => n == v,
+        BR_GT => !z && n == v,
+        BR_LE => z || n != v,
         _ => return sim_err!("unknown branch predicate {pred:#x}"),
     })
 }
@@ -185,12 +212,9 @@ mod tests {
         Processor::new()
     }
 
-    // Soak up fetch's icache-miss stall, then decode whatever lands in IF/ID.
-    // One call = one """cycle"""
+    // Fetch then decode - one call, one instruction pushed into ID/EX.
     fn step(p: &mut Processor) -> DecodedOp {
-        while p.if_id.is_none() {
-            p.fetch().unwrap();
-        }
+        p.fetch().unwrap();
         p.decode().unwrap();
         p.id_ex.take().expect("frame decoded").op
     }

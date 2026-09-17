@@ -3,15 +3,14 @@ use crate::nstep::{frame_len, IfId, Processor};
 use crate::{error, memory, sim_err};
 
 impl Processor {
-    // IF: pull the frame at `pc` from the i-cache into the IF/ID latch and step
-    // `pc` past it. A refill costs MEM_READ_DELAY cycles.
+    // IF: pull the frame at `pc` straight out of memory into the IF/ID latch
+    // and step `pc` past it.
     pub fn fetch(&mut self) -> error::Result<()> {
-        if self.fetch_stall > 0 {
-            self.fetch_stall -= 1;
-            if self.fetch_stall > 0 {
-                self.if_id = None;
-                return Ok(());
-            }
+        // Decode saw a halt behind us - nothing past it should ever enter the
+        // pipe, so just stop bringing in new frames and let the rest drain.
+        if self.halt_pending {
+            self.if_id = None;
+            return Ok(());
         }
 
         let pc = self.pc;
@@ -22,11 +21,10 @@ impl Processor {
             return sim_err!("instruction fetch at unmapped address {pc:#018x}");
         }
 
-        let (bytes, penalty) = self.icache.fill(pc, isa::MEM_READ_DELAY);
-        if penalty > 0 {
-            self.fetch_stall = penalty;
-            self.if_id = None;
-            return Ok(());
+        let mut bytes = [0u8; isa::MAX_INSN_BYTES];
+        for (i, b) in bytes.iter_mut().enumerate() {
+            let a = pc.wrapping_add(i as u64);
+            *b = if memory::is_mapped(a) { memory::read(a, 1).unwrap_or(0) as u8 } else { 0 };
         }
 
         self.pc = isa::align_up(pc + frame_len(&bytes)?, isa::ALIGNMENT);
@@ -40,8 +38,6 @@ impl Processor {
     pub(crate) fn redirect_fetch(&mut self, target: u64) {
         self.pc = target;
         self.if_id = None;
-        self.fetch_stall = 0;
-        self.icache.flush();
     }
 }
 
@@ -58,15 +54,9 @@ mod tests {
     }
 
     #[test]
-    fn cold_frame_stalls_then_delivers() {
+    fn fetch_delivers_the_frame_in_one_call() {
         let _seq = memory::test_guard();
         let mut p = load("nop\nnop\nhalt\n");
-
-        for _ in 0..isa::MEM_READ_DELAY {
-            p.fetch().unwrap();
-            assert!(p.if_id.is_none(), "bubble while the refill is outstanding");
-            assert_eq!(p.pc, 0, "fetch pointer parked during the stall");
-        }
 
         p.fetch().unwrap();
         let f = p.if_id.take().expect("frame delivered");
@@ -78,24 +68,18 @@ mod tests {
     }
 
     #[test]
-    fn walks_frames_and_hits_the_warm_window() {
+    fn walks_frames_by_their_own_length() {
         let _seq = memory::test_guard();
         let mut p = load("mov r1, #5\nadd r2, r1, r1\nhalt\n");
 
         let mut seen = Vec::new();
-        for _ in 0..64 {
+        for _ in 0..3 {
             p.fetch().unwrap();
-            if let Some(f) = p.if_id.take() {
-                seen.push(f.pc);
-                if f.bytes[0] == 0xFF {
-                    break;
-                }
-            }
+            seen.push(p.if_id.take().expect("frame delivered").pc);
         }
         // mov r1,#5 -> 4 bytes; add r2,r1,r1 -> 5 bytes, aligned up to 12.
         assert_eq!(seen, vec![0, 4, 12]);
-        // Only the first fetch missed.
-        assert_eq!(p.fetch_stall, 0);
+        memory::reset();
     }
 
     #[test]

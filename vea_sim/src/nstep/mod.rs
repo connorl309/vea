@@ -17,7 +17,8 @@ mod fetch;
 mod decode;
 mod execute;
 mod writeback;
-mod icache;
+#[cfg(test)]
+mod pipeline_tests;
 
 // The five pipeline stages in program order
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -64,6 +65,29 @@ pub enum DecodedOp {
     Trap { vector: u64 },
 }
 
+// EX/WB pipeline stage. Execute has already done whatever math or memory
+// access the instruction needed; this is just the leftover architectural
+// effect for Writeback to apply. Decode also peeks at this to forward a
+// result that hasn't reached `regs`/`cc` yet - see decode.rs.
+#[derive(Clone, Copy)]
+pub struct ExWb {
+    pub pc: u64,
+    pub commit: Commit,
+}
+
+// What Writeback actually commits. Most instructions land on Reg or Nothing;
+// Cmp/cmp.s land on Flags instead of a register. Halt still rides the normal
+// three stages to get here. only the "stop fetching anything past this
+// point" part happens early, in Decode. Otherwise an in-flight instruction
+// ahead of the halt in EX/WB would have its result dropped on the floor.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Commit {
+    Nothing,
+    Reg { rd: usize, value: i64 },
+    Flags { z: bool, n: bool, c: bool, v: bool },
+    Halt,
+}
+
 // Byte length of the instruction frame at `bytes[0]`. Every frame is 2 bytes of
 // opcode + opinfo; the opinfo high nibble carries the immediate payload length
 // and the opcode says how many register-operand bytes sit before it. Fetch
@@ -86,10 +110,10 @@ pub(crate) fn frame_len(bytes: &[u8]) -> error::Result<u64> {
     })
 }
 
-// The pipelined processor. Fetch and Decode are wired; Execute/Writeback are
-// still stubs that pass bubbles through and do nothing else. `tick()` runs the
-// four stages back to front so each one reads the latch the stage ahead of it
-// left last cycle before that latch gets overwritten.
+// The pipelined processor. Fetch, Decode and Execute are wired; Writeback is
+// still a stub that drops whatever Execute hands it. `tick()` runs the four
+// stages back to front so each one reads the latch the stage ahead of it left
+// last cycle before that latch gets overwritten.
 pub struct Processor {
     pub pc: u64,
     pub cycles: u64,
@@ -97,11 +121,13 @@ pub struct Processor {
     halted: bool,
     regs: isa::RegisterFile,
     cc: isa::ConditionCodes,
-    icache: icache::ICache,
     if_id: Option<IfId>,
-    // Cycles left on an i-cache refill. Fetch holds while non-zero.
-    fetch_stall: u64,
     id_ex: Option<IdEx>,
+    ex_wb: Option<ExWb>,
+    // Set the moment Decode sees a halt. Fetch checks this and stops feeding
+    // the pipe anything new, but `halted` itself doesn't flip until the halt
+    // actually commits in Writeback
+    halt_pending: bool,
 }
 
 impl Processor {
@@ -113,10 +139,10 @@ impl Processor {
             halted: false,
             regs: [0u64; isa::NUM_REGS],
             cc: isa::ConditionCodes::reset(),
-            icache: icache::ICache::new(),
             if_id: None,
-            fetch_stall: 0,
             id_ex: None,
+            ex_wb: None,
+            halt_pending: false,
         }
     }
 

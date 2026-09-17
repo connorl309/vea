@@ -26,17 +26,6 @@ pub struct ConditionCodes {
 // Fetch always pulls a whole frame so Decode sees every byte it might need.
 pub const MAX_INSN_BYTES: usize = 13;
 
-// Instruction cache: a sliding window of program bytes Fetch streams through,
-// refilled when the PC nears the end. See nstep::icache.
-// TODO: d-cache modeling for loads/stores
-pub const ICACHE_SIZE: usize = 512;
-pub const DCACHE_SIZE: usize = usize::MIN;
-
-// How many cycles will modeled (fake) memory
-// stall for in sim?
-pub const MEM_READ_DELAY: u64 = 3;
-pub const MEM_WRITE_DELAY: u64 = 3;
-
 /*
 ==========================================================
 
