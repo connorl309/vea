@@ -145,6 +145,40 @@ fn store_then_load_round_trip() {
     memory::reset();
 }
 
+// The forwarding path (decode's `reg_value`) doesn't distinguish where a
+// value came from. A load's result lands in EX/WB at the same depth an ALU
+// result does, since there's no separate Memory stage here to delay it a
+// cycle further
+#[test]
+fn a_load_immediately_used_by_the_next_instruction_forwards_correctly() {
+    let _seq = memory::test_guard();
+    let mut p = load("mov r1, 0x3000\nmov r2, #7\nst [r1], r2\nld r3, [r1]\nadd r4, r3, r3\nhalt\n");
+
+    p.cycle(200).expect("no fault");
+    assert!(p.halted());
+    assert_eq!(p.regs[3], 7, "ld's own value must be forwarded to itself decoding correctly");
+    assert_eq!(p.regs[4], 14, "add must see the just-loaded r3, not a stale one");
+
+    memory::reset();
+}
+
+// A chain of adjacent dependencies, each one relying on forwarding from the
+// instruction directly ahead of it rather than an already-committed register.
+#[test]
+fn a_chain_of_adjacent_dependencies_all_forward() {
+    let _seq = memory::test_guard();
+    let mut p = load("mov r1, #2\nadd r2, r1, r1\nadd r3, r2, r2\nadd r4, r3, r3\nhalt\n");
+
+    p.cycle(200).expect("no fault");
+    assert!(p.halted());
+    assert_eq!(p.regs[1], 2);
+    assert_eq!(p.regs[2], 4);
+    assert_eq!(p.regs[3], 8);
+    assert_eq!(p.regs[4], 16);
+
+    memory::reset();
+}
+
 // A narrow, sign-extended load has to come back through the whole pipe with
 // the sign bit actually extended, not just the raw byte.
 #[test]
