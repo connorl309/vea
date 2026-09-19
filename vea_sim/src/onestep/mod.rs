@@ -15,12 +15,6 @@ use crate::memory;
 use crate::shared;
 use crate::sim_err;
 
-// onestep does fetch, decode, execute and writeback for an instruction all
-// within its one "cycle" instead of overlapping them across separate ones the
-// way nstep does. Charging 4 clock cycles per retired instruction - one per
-// stage nstep actually pipelines - puts `cycles` on the same time-unit scale
-// as nstep's, so the two are comparable: same total work, the difference is
-// only whether it's overlapped.
 const CYCLES_PER_INSTR: u64 = 4;
 
 // Model of the processor for sim purposes.
