@@ -124,7 +124,7 @@ impl Processor {
             0x30 => {
                 let opinfo = memory::read(pc + 1, 1)? as u8;
                 let (dest, len) = self.target(pc, Rel::Relative)?;
-                if predicate(opinfo & 0x0F)?(&self.cc) {
+                if predicate(opinfo & BR_MASK)?(&self.cc) {
                     Step::Jump(dest)
                 } else {
                     Step::Next(len)
@@ -152,7 +152,7 @@ impl Processor {
 
             // trap : the exception vector is a one byte immediate payload.
             0xFE => {
-                let vector = fetch_imm(pc + 2, plen(memory::read(pc + 1, 1)? as u8))?;
+                let vector = fetch_imm(pc + 2, isa::imm_len(memory::read(pc + 1, 1)? as u8, 2))?;
                 return sim_err!("trap {vector:#04x} at PC={pc:#018x} is not implemented");
             }
 
@@ -176,7 +176,7 @@ impl Processor {
     fn unary(&self, at: u64) -> error::Result<Unary> {
         let opinfo = memory::read(at + 1, 1)? as u8;
         let reg = reg_at(at + 2)?;
-        let (src, n) = self.source(at + 3, opinfo)?;
+        let (src, n) = self.source(at + 3, opinfo, 3)?;
         Ok(Unary { reg, src, len: 3 + n })
     }
 
@@ -186,7 +186,7 @@ impl Processor {
         let opinfo = memory::read(at + 1, 1)? as u8;
         let rd = reg_at(at + 2)?;
         let a = self.get_reg(reg_at(at + 3)?);
-        let (b, n) = self.source(at + 4, opinfo)?;
+        let (b, n) = self.source(at + 4, opinfo, 4)?;
         Ok(Binary { rd, a, b, len: 4 + n })
     }
 
@@ -200,7 +200,7 @@ impl Processor {
         let flags = opinfo & 0x0F;
         let reg = reg_at(at + 2)?;
         let base = self.get_reg(reg_at(at + 3)?);
-        let (offset, n) = self.source(at + 4, opinfo)?;
+        let (offset, n) = self.source(at + 4, opinfo, 4)?;
         let width = match (flags >> 1) & 0b11 {
             0b00 => 8,
             0b01 => 1,
@@ -216,30 +216,33 @@ impl Processor {
         })
     }
 
-    // b* / jmp : the single target operand. An immediate (payload length > 0) is
-    // a branch offset relative to `at` or an absolute address per `rel`; a bare
-    // register (payload length 0) is always an absolute address.
+    // b* / jmp : the single target operand. If BR_IMM is set, the target is an
+    // immediate. It is a branch offset relative to `at` or an absolute address
+    // per `rel`. If BR_IMM is clear, the target is a register. A register target
+    // is always an absolute address.
     fn target(&self, at: u64, rel: Rel) -> error::Result<(u64, u64)> {
         let opinfo = memory::read(at + 1, 1)? as u8;
-        match plen(opinfo) {
-            0 => Ok((self.get_reg(reg_at(at + 2)?) as u64, 3)),
-            p => {
-                let imm = fetch_imm(at + 2, p)?;
-                let dest = match rel {
-                    Rel::Relative => at.wrapping_add(imm),
-                    Rel::Absolute => imm,
-                };
-                Ok((dest, 2 + p as u64))
-            }
+        if opinfo & BR_IMM == 0 {
+            Ok((self.get_reg(reg_at(at + 2)?) as u64, 3))
+        } else {
+            let p = isa::imm_len(opinfo, 2);
+            let imm = fetch_imm(at + 2, p)?;
+            let dest = match rel {
+                Rel::Relative => at.wrapping_add(imm),
+                Rel::Absolute => imm,
+            };
+            Ok((dest, 2 + p as u64))
         }
     }
 
     // The trailing source operand at `at`: the sign-extended immediate when the
     // ALSO_IMMEDIATE flag is set, otherwise the value of the register named
-    // there. Also returns how many payload bytes it consumed.
-    fn source(&self, at: u64, opinfo: u8) -> error::Result<(i64, u64)> {
+    // there. `head` is the number of bytes before the operand. Also returns how
+    // many payload bytes it consumed.
+    fn source(&self, at: u64, opinfo: u8, head: u8) -> error::Result<(i64, u64)> {
         if opinfo & OPINFO_FLAG_ALSO_IMMEDIATE != 0 {
-            Ok((fetch_imm(at, plen(opinfo))? as i64, plen(opinfo) as u64))
+            let n = isa::imm_len(opinfo, head);
+            Ok((fetch_imm(at, n)? as i64, n as u64))
         } else {
             Ok((self.get_reg(reg_at(at)?), 1))
         }
@@ -332,11 +335,6 @@ struct Binary { rd: usize, a: i64, b: i64, len: u64 }
 // ld / st operands, address already resolved.
 struct Mem { reg: usize, addr: u64, width: usize, sext: bool, len: u64 }
 
-// Immediate payload length, from the opinfo high nibble.
-fn plen(opinfo: u8) -> u8 {
-    opinfo >> 4
-}
-
 // Read one register index from `addr` and confirm it names a real register.
 fn reg_at(addr: u64) -> error::Result<usize> {
     let r = memory::read(addr, 1)? as usize;
@@ -350,7 +348,7 @@ fn reg_at(addr: u64) -> error::Result<usize> {
 // VEA stores every immediate in the fewest signed bytes that round-trip (see the
 // assembler's `imm_bytes`), so the machine widens it back to a full 64 bits by
 // sign extension. `at` is the first immediate byte and `len` the payload length
-// from the opinfo high nibble; `len == 0` is the immediate value zero.
+// (see `isa::imm_len`); `len == 0` is the immediate value zero.
 fn fetch_imm(at: u64, len: u8) -> error::Result<u64> {
     if len > 8 {
         return sim_err!("immediate payload length {len} at {at:#018x} exceeds 8 bytes");

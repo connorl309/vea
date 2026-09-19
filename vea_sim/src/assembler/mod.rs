@@ -29,7 +29,9 @@ The general format is as follows, listed in big endian byte order:
 
 [   opcode byte    ][   opinfo   ][  rd/rb/imm*  ][  rs1/imm*  ][   rs2/imm*   ]
 
-opinfo is special. In all instructions it is composing the byte of [   payload length[4] | flags[4]    ].
+opinfo is special. In all instructions it is composing the byte of [   length[4] | flags[4]    ].
+The length is the size of the whole instruction in bytes. It includes the opcode and opinfo bytes.
+It does not include the alignment padding.
 Other interpretations are left open as this project develops.
 
 The bytes marked with * are optional and presence depends on the instruction itself. For example, a
@@ -49,6 +51,10 @@ pub const BR_LT: u8     = 0x3; // blt   : N != V
 pub const BR_GE: u8     = 0x4; // bgte  : N == V
 pub const BR_GT: u8     = 0x5; // bgt   : !Z && (N == V)
 pub const BR_LE: u8     = 0x6; // blte  : Z || (N != V)
+// Branch flags[4]. Bits [2:0] are the predicate above. Bit 3 is set if the
+// target is an immediate. It is clear if the target is a register.
+pub const BR_MASK: u8 = 0b0111;
+pub const BR_IMM: u8  = 0b1000;
 
 pub const OPINFO_FLAG_ALSO_IMMEDIATE: u8 = 0b0001;
 // Load/store flags[4]. Bit 0 is OPINFO_FLAG_ALSO_IMMEDIATE: set => [base + disp],
@@ -59,10 +65,10 @@ pub const LS_SIZE_H: u8 = 0b0100; // 2 bytes
 pub const LS_SIZE_W: u8 = 0b0110; // 4 bytes
 pub const LS_SEXT:   u8 = 0b1000; // sign-extend the loaded value (narrow loads)
 // Encodings (big-endian bytes; store keeps the value in the first register slot):
-//   ld    r5, [r6]         -> 40 01 05 06       ; default 8-byte, disp 0
-//   ld.w  r1, [r2 + 0x10]  -> 40 17 01 02 10    ; 4-byte access, 1-byte displacement
-//   ld.sb r3, [r4 + r7]    -> 40 0A 03 04 07    ; indexed, sign-extended byte
-//   st    [r8 - 8], r9     -> 41 11 09 08 F8    ; 8-byte store, disp -8
+//   ld    r5, [r6]         -> 40 41 05 06       ; default 8-byte, disp 0
+//   ld.w  r1, [r2 + 0x10]  -> 40 57 01 02 10    ; 4-byte access, 1-byte displacement
+//   ld.sb r3, [r4 + r7]    -> 40 5A 03 04 07    ; indexed, sign-extended byte
+//   st    [r8 - 8], r9     -> 41 51 09 08 F8    ; 8-byte store, disp -8
 
 #[derive(Debug, Clone, Copy)]
 enum Op {
@@ -159,7 +165,7 @@ pub const INSTRUCTIONS: &[InstructionFormat] = &[
     point so each address is known, then emit bytes. Every
     instruction is padded with zeroes to the next ALIGNMENT
     boundary so a flat image matches the fetch rule
-    PC = round_up(PC + plen, ALIGNMENT).
+    PC = round_up(PC + length, ALIGNMENT).
 
     Label references are encoded as the shortest signed
     immediate that fits. A b* target is relative to the
@@ -201,8 +207,8 @@ fn slot_size(s: &Slot) -> usize {
     }
 }
 
-// Shortest signed width in bytes that holds a resolved label value, at least one
-// byte so a branch payload length stays nonzero, and never past the kind's cap.
+// Shortest signed width in bytes that holds a resolved label value. The width is
+// at least one byte. It is never more than the cap of the kind.
 fn sym_width(value: i64, relative: bool) -> Result<usize, String> {
     let cap = if relative { REL_MAX } else { ABS_MAX };
     let n = imm_bytes(value).len().max(1);
@@ -417,13 +423,17 @@ fn encode(insn: &Insn, syms: &HashMap<String, u64>) -> Result<Vec<u8>, String> {
             }
         }
     }
-    if imm.len() > 0xF {
-        return Err(format!("immediate payload of {} bytes exceeds 15", imm.len()));
+    if matches!(f.inst_type, Op::R__OR__I) && !matches!(insn.slots[0], Slot::Reg(_)) {
+        flags |= BR_IMM;
+    }
+    let total = 2 + regs.len() + imm.len();
+    if total > 0xF {
+        return Err(format!("instruction of {total} bytes exceeds 15"));
     }
     if f.opcode == 0x30 && imm.len() > REL_MAX {
         return Err("branch offset exceeds a 32 bit signed value".into());
     }
-    let mut out = vec![f.opcode, ((imm.len() as u8) << 4) | flags];
+    let mut out = vec![f.opcode, ((total as u8) << 4) | flags];
     out.append(&mut regs);
     out.append(&mut imm);
     Ok(out)
@@ -584,72 +594,72 @@ mod tests {
     // encoding, and the exact bytes each must produce (no alignment padding).
     const ENCODE: &[(&str, &str)] = &[
         // processor control
-        ("nop", "00 00"),
-        ("halt", "ff 00"),
-        ("trap", "fe 00"),
-        ("trap 0x0d", "fe 10 0d"),
+        ("nop", "00 20"),
+        ("halt", "ff 20"),
+        ("trap", "fe 20"),
+        ("trap 0x0d", "fe 30 0d"),
         // mov, register then immediate, including a negative literal
-        ("mov r1, r2", "01 00 01 02"),
-        ("mov r1, 0x1234", "01 21 01 12 34"),
-        ("mov r5, -#1", "01 11 05 ff"),
+        ("mov r1, r2", "01 40 01 02"),
+        ("mov r1, 0x1234", "01 51 01 12 34"),
+        ("mov r5, -#1", "01 41 05 ff"),
         // alu, three register form
-        ("add r1, r2, r3", "10 00 01 02 03"),
-        ("sub r1, r2, r3", "11 00 01 02 03"),
-        ("and r1, r2, r3", "12 00 01 02 03"),
-        ("or r1, r2, r3", "13 00 01 02 03"),
-        ("xor r1, r2, r3", "15 00 01 02 03"),
-        ("shl r1, r2, r3", "16 00 01 02 03"),
-        ("shr r1, r2, r3", "17 00 01 02 03"),
-        ("sar r1, r2, r3", "18 00 01 02 03"),
-        ("mul r1, r2, r3", "19 00 01 02 03"),
-        ("div r1, r2, r3", "1a 00 01 02 03"),
-        ("not r1, r2", "14 00 01 02"),
+        ("add r1, r2, r3", "10 50 01 02 03"),
+        ("sub r1, r2, r3", "11 50 01 02 03"),
+        ("and r1, r2, r3", "12 50 01 02 03"),
+        ("or r1, r2, r3", "13 50 01 02 03"),
+        ("xor r1, r2, r3", "15 50 01 02 03"),
+        ("shl r1, r2, r3", "16 50 01 02 03"),
+        ("shr r1, r2, r3", "17 50 01 02 03"),
+        ("sar r1, r2, r3", "18 50 01 02 03"),
+        ("mul r1, r2, r3", "19 50 01 02 03"),
+        ("div r1, r2, r3", "1a 50 01 02 03"),
+        ("not r1, r2", "14 40 01 02"),
         // alu, immediate form (decimal `#`) and multi byte truncation (hex)
-        ("add r1, r2, #5", "10 11 01 02 05"),
-        ("sub r1, r1, #1", "11 11 01 01 01"),
-        ("and r1, r2, 0xff", "12 21 01 02 00 ff"),
+        ("add r1, r2, #5", "10 51 01 02 05"),
+        ("sub r1, r1, #1", "11 51 01 01 01"),
+        ("and r1, r2, 0xff", "12 61 01 02 00 ff"),
         // compare, unsigned and signed, plus the immediate zero edge
-        ("cmp r1, r2", "20 00 01 02"),
-        ("cmp.s r1, r2", "21 00 01 02"),
-        ("cmp r1, #0", "20 01 01"),
-        // branch, every predicate sits in the flag nibble
-        ("b 0x08", "30 10 08"),
-        ("beq 0x08", "30 11 08"),
-        ("bne 0x08", "30 12 08"),
-        ("blt 0x08", "30 13 08"),
-        ("bge 0x08", "30 14 08"),
-        ("bgt 0x08", "30 15 08"),
-        ("ble 0x08", "30 16 08"),
-        ("b r1", "30 00 01"),
-        ("beq r1", "30 01 01"),
+        ("cmp r1, r2", "20 40 01 02"),
+        ("cmp.s r1, r2", "21 40 01 02"),
+        ("cmp r1, #0", "20 31 01"),
+        // branch, every predicate sits in the flag nibble, bit 3 marks an immediate
+        ("b 0x08", "30 38 08"),
+        ("beq 0x08", "30 39 08"),
+        ("bne 0x08", "30 3a 08"),
+        ("blt 0x08", "30 3b 08"),
+        ("bge 0x08", "30 3c 08"),
+        ("bgt 0x08", "30 3d 08"),
+        ("ble 0x08", "30 3e 08"),
+        ("b r1", "30 30 01"),
+        ("beq r1", "30 31 01"),
         // jump is absolute
-        ("jmp r7", "31 00 07"),
-        ("jmp 0x1000", "31 20 10 00"),
+        ("jmp r7", "31 30 07"),
+        ("jmp 0x1000", "31 48 10 00"),
         // load, size and sign in the flag nibble, displacement mode
-        ("ld r5, [r6]", "40 01 05 06"),
-        ("ld.b r5, [r6]", "40 03 05 06"),
-        ("ld.h r5, [r6]", "40 05 05 06"),
-        ("ld.w r5, [r6]", "40 07 05 06"),
-        ("ld.sb r5, [r6]", "40 0b 05 06"),
-        ("ld.sh r5, [r6]", "40 0d 05 06"),
-        ("ld.sw r5, [r6]", "40 0f 05 06"),
-        ("ld r5, [r6 + 0x10]", "40 11 05 06 10"),
-        ("ld r5, [r6 + r7]", "40 00 05 06 07"),
+        ("ld r5, [r6]", "40 41 05 06"),
+        ("ld.b r5, [r6]", "40 43 05 06"),
+        ("ld.h r5, [r6]", "40 45 05 06"),
+        ("ld.w r5, [r6]", "40 47 05 06"),
+        ("ld.sb r5, [r6]", "40 4b 05 06"),
+        ("ld.sh r5, [r6]", "40 4d 05 06"),
+        ("ld.sw r5, [r6]", "40 4f 05 06"),
+        ("ld r5, [r6 + 0x10]", "40 51 05 06 10"),
+        ("ld r5, [r6 + r7]", "40 50 05 06 07"),
         // store, no sign variants, value goes in the first register slot
-        ("st [r6], r5", "41 01 05 06"),
-        ("st.b [r6], r5", "41 03 05 06"),
-        ("st.h [r6], r5", "41 05 05 06"),
-        ("st.w [r6], r5", "41 07 05 06"),
-        ("st [r6 - #4], r5", "41 11 05 06 fc"),
-        ("st [r6 + r7], r5", "41 00 05 06 07"),
+        ("st [r6], r5", "41 41 05 06"),
+        ("st.b [r6], r5", "41 43 05 06"),
+        ("st.h [r6], r5", "41 45 05 06"),
+        ("st.w [r6], r5", "41 47 05 06"),
+        ("st [r6 - #4], r5", "41 51 05 06 fc"),
+        ("st [r6 + r7], r5", "41 50 05 06 07"),
     ];
 
     // A whole program and its padded image. Exercises labels, the relative
     // branch offset, and per instruction alignment.
     const IMAGE: &[(&str, &str)] = &[
-        ("loop: sub r1, r1, #1\n b loop", "11 11 01 01 01 00 00 00 30 10 f8 00"),
-        ("start: nop\n jmp start", "00 00 00 00 31 10 00 00"),
-        ("b done\n done: nop", "30 10 04 00 00 00 00 00"),
+        ("loop: sub r1, r1, #1\n b loop", "11 51 01 01 01 00 00 00 30 38 f8 00"),
+        ("start: nop\n jmp start", "00 20 00 00 31 38 00 00"),
+        ("b done\n done: nop", "30 38 04 00 00 20 00 00"),
     ];
 
     // Sources the assembler must reject.

@@ -150,26 +150,15 @@ impl fmt::Display for Commit {
     }
 }
 
-// Byte length of the instruction frame at `bytes[0]`. Every frame is 2 bytes of
-// opcode + opinfo; the opinfo high nibble carries the immediate payload length
-// and the opcode says how many register-operand bytes sit before it. Fetch
-// steps the PC by this; Decode re-derives the operands from the same layout.
+// Byte length of the instruction frame at `bytes[0]`. The high nibble of opinfo
+// holds the length. Fetch steps the PC by this length.
+// A frame has at least 2 bytes: the opcode and opinfo.
 pub(crate) fn frame_len(bytes: &[u8]) -> error::Result<u64> {
-    let opcode = bytes[0];
-    let opinfo = bytes[1];
-    let plen = u64::from(opinfo >> 4);
-    // trailing source operand: an immediate payload, or one register byte
-    let tail = if opinfo & OPINFO_FLAG_ALSO_IMMEDIATE != 0 { plen } else { 1 };
-
-    Ok(2 + match opcode {
-        0x00 | 0xFF => 0,                                // nop / halt
-        0x01 | 0x14 | 0x20 | 0x21 => 1 + tail,           // mov / not / cmp / cmp.s
-        0x10..=0x13 | 0x15..=0x1A => 2 + tail,           // add .. div
-        0x40 | 0x41 => 2 + tail,                         // ld / st
-        0x30 | 0x31 => if plen == 0 { 1 } else { plen }, // b* / jmp: reg target or immediate
-        0xFE => plen,                                    // trap
-        _ => return sim_err!("illegal opcode {opcode:#04x} in fetched frame"),
-    })
+    let len = isa::insn_len(bytes[1]);
+    if len < 2 {
+        return sim_err!("frame length {len} is less than 2 for opcode {:#04x}", bytes[0]);
+    }
+    Ok(u64::from(len))
 }
 
 // The pipelined processor. Fetch, Decode and Execute are wired; Writeback is

@@ -7,7 +7,7 @@
 
 // To what byte-alignment is every instruction?
 // For now, it is 4 byte aligned, so every fetch
-// will PC = (PC + plen) rounded up to the next multiple of 4.
+// will PC = (PC + length) rounded up to the next multiple of 4.
 pub const ALIGNMENT: u64 = 0x4;
 // How many registers does Vea support?
 pub const NUM_REGS: usize = 32;
@@ -52,6 +52,17 @@ impl VeaReg {
 // padding.
 pub fn align_up(v: u64, a: u64) -> u64 {
     (v + a - 1) / a * a
+}
+
+// Length of the whole instruction in bytes. It is the high nibble of opinfo.
+pub fn insn_len(opinfo: u8) -> u8 {
+    opinfo >> 4
+}
+
+// Length of the immediate in bytes. The operands start `head` bytes into the
+// instruction. A length that is not more than `head` has no immediate.
+pub fn imm_len(opinfo: u8, head: u8) -> u8 {
+    insn_len(opinfo).saturating_sub(head)
 }
 
 // Condition Codes

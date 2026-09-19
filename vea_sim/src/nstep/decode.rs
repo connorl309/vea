@@ -1,5 +1,6 @@
 use crate::assembler::{
-    BR_ALWAYS, BR_EQ, BR_GE, BR_GT, BR_LE, BR_LT, BR_NE, LS_SEXT, OPINFO_FLAG_ALSO_IMMEDIATE,
+    BR_ALWAYS, BR_EQ, BR_GE, BR_GT, BR_IMM, BR_LE, BR_LT, BR_MASK, BR_NE, LS_SEXT,
+    OPINFO_FLAG_ALSO_IMMEDIATE,
 };
 use crate::isa;
 use crate::nstep::{Commit, DecodedOp, ExWb, IdEx, Processor};
@@ -65,7 +66,7 @@ impl Processor {
             0x30 => {
                 let (z, n, v) = self.cc_bits();
                 DecodedOp::Branch {
-                    taken: predicate(opinfo & 0x0F, z, n, v)?,
+                    taken: predicate(opinfo & BR_MASK, z, n, v)?,
                     target: self.branch_target(pc, bytes, opinfo, false)?,
                 }
             }
@@ -99,7 +100,7 @@ impl Processor {
             }
 
             // trap: the whole immediate payload is the exception vector
-            0xFE => DecodedOp::Trap { vector: imm_at(bytes, 2, opinfo >> 4) as u64 },
+            0xFE => DecodedOp::Trap { vector: imm_at(bytes, 2, isa::imm_len(opinfo, 2)) as u64 },
 
             _ => return sim_err!("illegal opcode {opcode:#04x} reached decode at {pc:#018x}"),
         })
@@ -113,12 +114,11 @@ impl Processor {
         opinfo: u8,
         absolute: bool,
     ) -> error::Result<u64> {
-        let plen = opinfo >> 4;
-        Ok(if plen == 0 {
+        Ok(if opinfo & BR_IMM == 0 {
             self.reg_value(self.reg_at(pc, bytes, 2)?)
         } else {
             // force the add to be signed despite PC tracked as u64
-            let offset = imm_at(bytes, 2, plen);
+            let offset = imm_at(bytes, 2, isa::imm_len(opinfo, 2));
             if absolute { offset as u64 } else { (pc as i64).wrapping_add(offset) as u64 }
         })
     }
@@ -130,7 +130,7 @@ impl Processor {
     // into the PC back in Fetch, but it's cheap to hand back anyway.
     fn source(&self, bytes: &[u8], at: usize, opinfo: u8) -> (i64, usize) {
         if opinfo & OPINFO_FLAG_ALSO_IMMEDIATE != 0 {
-            let n = (opinfo >> 4) as usize;
+            let n = isa::imm_len(opinfo, at as u8) as usize;
             (imm_at(bytes, at, n as u8), n)
         } else {
             (self.reg_value(bytes[at] as usize) as i64, 1)
