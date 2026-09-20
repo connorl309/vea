@@ -10,6 +10,11 @@
 //! - The bytes are big endian. Byte 0 is in the top 8 bits.
 //! - After a halt instruction, the unit stops.
 //!   It starts again on a reset or a redirect.
+//! - Memory can take more than 1 cycle to reply, and it does not cancel a request.
+//!   After a redirect, the unit waits for the reply of a request in flight and drops it.
+//!   Without this, the unit takes the old reply as the new instruction.
+//! - Memory gives 1 reply for each request, in order.
+//!   Memory must drop its requests in a reset, because the unit does not remember them.
 
 module vea_fetch #(
     parameter [63:0] RESET_PC = 64'h0 //! PC value after a reset
@@ -36,9 +41,10 @@ module vea_fetch #(
   localparam logic [7:0] OP_HALT = 8'hFF;
 
   //! States of the fetch unit.
-  typedef enum logic [1:0] {
+  typedef enum logic [2:0] {
             STATE_ASK_FOR_MEM, //! Ask memory for the bytes at the PC.
             STATE_WAIT_FOR_MEM,    //! Wait for memory to send the bytes.
+            STATE_DRAIN_MEM,    //! A redirect came while a request was in flight. Wait for the reply and drop it.
             STATE_SEND_TO_DECODE,    //! Give the bytes to decode.
             STATE_HALT     //! Stop. Decode took a halt instruction.
   } state_t;
@@ -50,6 +56,11 @@ module vea_fetch #(
 
   //! The next PC is the end of this instruction, rounded up to a multiple of 4.
   wire [63:0] pc_next = (pc + 64'(insn_len) + 64'd3) & ~64'd3;
+
+  //! The unit never sends a request while another one is in flight. So at most 1 request is in flight, and it needs no counter.
+  //! A request is in flight after this edge if the unit sends it now, or if its reply has not arrived.
+  wire request_in_flight = (state == STATE_ASK_FOR_MEM) ||
+       ((state == STATE_WAIT_FOR_MEM || state == STATE_DRAIN_MEM) && !imem_rvalid);
 
   assign imem_req   = (state == STATE_ASK_FOR_MEM);
   assign imem_addr  = pc;
@@ -70,7 +81,7 @@ module vea_fetch #(
     else if (redirect_valid)
     begin
       pc <= redirect_pc;
-      state <= STATE_ASK_FOR_MEM;
+      state <= request_in_flight ? STATE_DRAIN_MEM : STATE_ASK_FOR_MEM;
     end
     else
     begin
@@ -83,6 +94,9 @@ module vea_fetch #(
             bytes_q <= imem_rdata;
             state <= STATE_SEND_TO_DECODE;
           end
+        STATE_DRAIN_MEM:
+          if (imem_rvalid)
+            state <= STATE_ASK_FOR_MEM;
         STATE_SEND_TO_DECODE:
           if (insn_ready)
           begin
@@ -91,6 +105,9 @@ module vea_fetch #(
           end
         STATE_HALT:
           $display("Hit a HALT instruction at pc=%h", pc);
+        //! The state register has 3 bits, and 3 values are not states. A bad value must not lock the unit.
+        default:
+          state <= STATE_ASK_FOR_MEM;
       endcase
     end
   end

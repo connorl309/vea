@@ -54,3 +54,35 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           exit "$status"
+
+  rtl:
+    # Pinned, not ubuntu-latest: the testbenches need Verilator 5 (--binary
+    # --timing). Ubuntu 24.04 packages 5.020. Older releases package 4.x.
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Verilator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y verilator
+          verilator --version
+      - name: RTL testbenches
+        run: |
+          set -o pipefail
+
+          # The Makefile keeps going after a failure, so one run shows the
+          # result of every testbench. The exit status is still nonzero.
+          make all 2>&1 | tee tb-output.txt
+          status=${PIPESTATUS[0]}
+
+          {
+            echo '### RTL testbenches'
+            echo '```text'
+            grep -E '^(== |tb_[a-z]+: |FAIL|%Fatal)' tb-output.txt || cat tb-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit "$status"
