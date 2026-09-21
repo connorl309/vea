@@ -5,7 +5,7 @@
 ## What is Vea?
 Vea, pronounced `vay-uh`, is an acronym of the phrase variably encoded architecture. It is my designation for this hodge-podge of stuff I have tossed together in the hopes of making an interesting simulator, exploring architectural design and simulation choices, as well as to work on my RTL and PCB design skills (eventually...)
 
-Slightly more formally, Vea is a 64-bit big endian architecture that is variably encoded. Instructions can be anywhere from 2 to 13 bytes in size. It is a load-store architecture.
+Slightly more formally, Vea is a 64-bit big endian architecture that is variably encoded. Instructions can be anywhere from 2 to 13 bytes in size. It is a load-store architecture. There are 32x general purpose registers that are all 64 bits in size, with the MSB (left-most bit for Vea) being considered bit 63.
 
 # AI disclosure!!
 This is my second time actively using AI outside of work on a programming project. I used Claude Code exclusively on Sonnet, varying the effort and thinking settings based on the goal (i.e. writing UI code with ratatui source available = medium effort, no thinking; testgen xhigh, thinking; etc.). Claude was allowed to write code! Claude wrote the bulk of the assembler parsing and emission logic; all of the TUI/CLI code; writing comments and test cases.

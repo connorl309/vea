@@ -220,7 +220,7 @@ fn pipeline(f: &mut Frame, area: Rect, app: &App, s: &Snapshot) {
         let hint = Paragraph::new(vec![
             Line::from(""),
             Line::from("  onestep retires one instruction per"),
-            Line::from("  cycle \u{2014} no pipeline stages to show"),
+            Line::from("  tick; no pipeline stages to show"),
         ])
         .block(block);
         f.render_widget(hint, area);
