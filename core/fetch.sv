@@ -44,8 +44,8 @@ module vea_fetch #(
     S_REQUEST,
     S_WAIT,
     S_DELIVER,
-    // A redirect can cancel a request that memory already has. Fetch must discard the
-    // reply, or the next frame would come from the old address.
+    // A redirect can cancel a request that memory already has. Fetch must discard that
+    // reply. Without this state, the next frame comes from the old address.
     S_DRAIN
   } state_t;
 

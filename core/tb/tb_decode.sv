@@ -2,7 +2,9 @@
 //!
 //! The model in this file builds each frame as the assembler does.
 
-module tb_decode;
+module tb_decode #(
+  parameter int SEED = 0
+);
   localparam int MB = 13;
   localparam int NV = 100;
 
@@ -54,6 +56,14 @@ module tb_decode;
   task automatic tick(input int n = 1);
     repeat (n) @(posedge clk);
     #1;
+  endtask
+
+  // Stage 2 is a register, so a new frame needs a clock edge before ex_* reflects it.
+  // An index-register store needs a second edge to read its value, so this waits for
+  // ex_valid instead of a fixed count.
+  task automatic wait_issue();
+    tick();
+    while (!ex_valid) tick();
   endtask
 
   // ---- Reference model -------------------------------------------------------------
@@ -200,7 +210,7 @@ module tb_decode;
 
   task automatic apply_check(input string name, input exp_t e);
     frame_valid = 1'b1;
-    #1;
+    wait_issue();
     check64(ex_pc,             frame_pc,              {name, " pc"});
     check64(64'(ex_illegal),   64'b0,                 {name, " illegal"});
     check64(64'(ex_wr_en),     64'(e.wr_en),          {name, " wr_en"});
@@ -476,7 +486,7 @@ module tb_decode;
           fbv = with_byte(fbv, 4, 8'd3);
           pack_frame(ln, 4'(fl));
           frame_valid = 1'b1;
-          #1;
+          wait_issue();
           ill = ref_illegal(8'(op), 4'(fl), ln, 8'd1, 8'd2, 8'd3);
           check64(64'(ex_illegal), 64'(ill), $sformatf("sweep op %h flags %h len %0d illegal", op, fl, ln));
           if (!ill) check_control(8'(op), 4'(fl));
@@ -503,7 +513,7 @@ module tb_decode;
       fbv = with_byte(fbv, 4, b4);
       pack_frame(ln, fl);
       frame_valid = 1'b1;
-      #1;
+      wait_issue();
       check64(64'(ex_illegal), 64'(ref_illegal(op, fl, ln, b2, b3, b4)),
               $sformatf("random op %h flags %h len %0d regs %h %h %h illegal", op, fl, ln, b2, b3, b4));
     end
@@ -521,7 +531,7 @@ module tb_decode;
 
   task automatic expect_illegal(input string name, input bit want);
     frame_valid = 1'b1;
-    #1;
+    wait_issue();
     check64(64'(ex_illegal), 64'(want),
             {"fault test: ", name, want ? " must raise ex_illegal" : " must not raise ex_illegal"});
     check64(ex_pc, frame_pc, {"fault test: ", name, " pc"});
@@ -715,9 +725,17 @@ module tb_decode;
     do_reset();
     check64(64'(halt), 64'b0, "halt after reset");
 
-    // Execute does not accept the frame, so the latch must not change.
+    // Execute does not accept the frame, so the latch must not change. Stage 2 must
+    // already hold an instruction first, or an empty stage 2 takes the frame at once
+    // no matter what ex_ready is.
+    begin_insn(8'h00);
+    end_insn(4'h0);
     frame_valid = 1'b1;
-    ex_ready    = 1'b0;
+    ex_ready    = 1'b1;
+    wait_issue();
+    ex_ready = 1'b0;
+    begin_insn(8'hFF);
+    end_insn(4'h0);
     tick(3);
     check64(64'(halt), 64'b0, "halt while Execute is not ready");
     ex_ready = 1'b1;
@@ -768,6 +786,16 @@ module tb_decode;
   endtask
 
   task automatic test_handshake();
+    // frame_ready and ex_valid are combinational, but both read s2_valid, so this
+    // sweep needs stage 2 already holding a plain instruction. An empty stage 2
+    // makes frame_ready 1 no matter what ex_ready is.
+    begin_insn(8'h00);
+    end_insn(4'h0);
+    frame_valid = 1'b1;
+    ex_ready    = 1'b1;
+    wait_issue();
+    frame_valid = 1'b0;
+
     for (int v = 0; v < 2; v++)
       for (int r = 0; r < 2; r++)
         for (int d = 0; d < 2; d++) begin
@@ -776,7 +804,9 @@ module tb_decode;
           redirect_valid = 1'(d);
           #1;
           check64(64'(frame_ready), 64'(r), "frame_ready follows ex_ready");
-          check64(64'(ex_valid), 64'(v == 1 && d == 0), "ex_valid");
+          // ex_valid reflects the instruction already in stage 2, not the incoming
+          // frame, so it does not depend on v.
+          check64(64'(ex_valid), 64'(d == 0), "ex_valid");
         end
     frame_valid    = 1'b0;
     ex_ready       = 1'b1;
@@ -784,17 +814,25 @@ module tb_decode;
   endtask
 
   initial begin
+    process::self().srandom(SEED);
+    $display("tb_decode: seed %0d", SEED);
     for (int i = 0; i < 32; i++) rf[i] = {16'hC0DE, 16'(i), 16'hBEEF, 16'(i * 7 + 1)};
     legal_ops = '{8'h00, 8'h01, 8'h10, 8'h11, 8'h12, 8'h13, 8'h14, 8'h15, 8'h16, 8'h17,
                   8'h18, 8'h19, 8'h1A, 8'h20, 8'h21, 8'h30, 8'h31, 8'h40, 8'h41, 8'hFE, 8'hFF};
     init_values();
     do_reset();
 
+    $display("tb_decode: test_directed");
     test_directed();
+    $display("tb_decode: test_faults");
     test_faults();
+    $display("tb_decode: test_sweep");
     test_sweep();
+    $display("tb_decode: test_random_illegal");
     test_random_illegal();
+    $display("tb_decode: test_halt");
     test_halt();
+    $display("tb_decode: test_handshake");
     test_handshake();
 
     $display("tb_decode: %0d of %0d frames that must fault raised ex_illegal, %0d of %0d look-alikes did not",

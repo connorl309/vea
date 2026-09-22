@@ -14,19 +14,14 @@
 //!
 //! The ID/EX register belongs to Execute, as the result register of the ALU does.
 //!
-//! The stage register holds register numbers and no register values. A value in that
-//! register would be old when the instruction waits behind an instruction that stalls.
+//! The stage register holds register numbers, not register values. A held register
+//! value goes stale when the instruction waits behind a stall.
 //!
 //! The register file must return the newest value of a register, also when the result
 //! is not written back yet. Decode does not stall on a register hazard.
 //!
 //! When ex_illegal is high, the other ex_ outputs are undefined, except ex_pc. This lets
 //! the opcode decode ignore the opcodes that are not defined.
-
-// SystemVerilog notes - <operator>|<variable> is a reduction operator!
-// SV will automatically convert this statement into the appropriate nesting
-// in logic, so if I do something like &|frame_bytes[10:15], the result is
-// equivalent to a 6-input AND gate.
 
 module vea_decode #(
   parameter int MAX_INSN_BYTES = 13
@@ -359,14 +354,14 @@ module vea_decode #(
   // value in a cycle of its own.
   assign need_value = s2_valid & s2.idx_store & ~value_done;
   // Stage 2 reads the value only when Execute is ready. When Execute is not ready, an
-  // older instruction can still work, and the register file does not have its result.
-  // The store would then keep an old value.
+  // older instruction can still work, but the register file does not have its result
+  // yet. A store read at this point captures a stale value.
   assign read_value = need_value & ex_ready;
   assign can_issue  = s2_valid & ~need_value;
 
   // A frame can enter when the register is empty. It can also enter when Execute takes
-  // the instruction in the register in the same cycle, or the pipeline would send an
-  // instruction only in every second cycle.
+  // the instruction in the register in the same cycle. Without this rule, the pipeline
+  // sends an instruction only every second cycle.
   assign frame_ready = ~s2_valid | (can_issue & ex_ready);
   // After a redirect, the frame is on the wrong path of a taken branch. The register must
   // not take it. Fetch drops the frame by itself in the same cycle.
@@ -449,9 +444,9 @@ module vea_decode #(
   // ---- Halt latch --------------------------------------------------------------------
 
   // The latch changes when the register takes the halt, not when Execute takes it. The
-  // frame leaves Fetch when the register takes it, so Fetch would read the bytes after
-  // the halt if the latch waited for Execute. An illegal halt does not stop Fetch,
-  // because Execute must fault on it.
+  // frame leaves Fetch at that same moment. A latch timed to Execute lets Fetch read
+  // bytes past the halt. An illegal halt does not stop Fetch. Execute must fault on it
+  // instead.
   always_ff @(posedge clk) begin
     if (!rst_n || redirect_valid)
       halt <= 1'b0;

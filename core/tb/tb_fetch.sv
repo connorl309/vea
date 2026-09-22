@@ -5,7 +5,8 @@
 
 module tb_fetch #(
   parameter int LATENCY      = 1,
-  parameter bit READY_TOGGLE = 1'b0
+  parameter bit READY_TOGGLE = 1'b0,
+  parameter int SEED         = 0
 );
   localparam int MB = 13;
   localparam int ST_REQUEST = 0, ST_WAIT = 1, ST_DELIVER = 2, ST_DRAIN = 3;
@@ -258,6 +259,8 @@ module tb_fetch #(
   endtask
 
   initial begin
+    process::self().srandom(SEED);
+    $display("tb_fetch: seed %0d", SEED);
     // Each byte has its own value, so a frame from a wrong address is easy to find.
     for (int a = 0; a < 1024; a++) mem[a] = 8'(a * 7 + 3);
     // The first three frames are mov, add and halt, with lengths 4, 5 and 2.
@@ -265,18 +268,30 @@ module tb_fetch #(
     {mem[4], mem[5], mem[6], mem[7], mem[8]} = {8'h10, 8'h50, 8'h02, 8'h01, 8'h01};
     {mem[12], mem[13]} = {8'hFF, 8'h20};
 
+    $display("tb_fetch: test_sequence");
     test_sequence();
+    $display("tb_fetch: test_backpressure");
     test_backpressure();
+    $display("tb_fetch: test_halt");
     test_halt();
+    $display("tb_fetch: test_redirect_request");
     test_redirect_request();
+    $display("tb_fetch: test_redirect_deliver");
     test_redirect_deliver();
+    $display("tb_fetch: test_redirect_wait_with_reply");
     test_redirect_wait_with_reply();
     // A latency of 1 has no cycle with a request in flight and no reply.
     if (LATENCY > 1) begin
+      $display("tb_fetch: test_redirect_wait_no_reply");
       test_redirect_wait_no_reply();
+      $display("tb_fetch: test_redirect_drain_with_reply");
       test_redirect_drain_with_reply();
     end
-    if (LATENCY > 2) test_double_redirect();
+    if (LATENCY > 2) begin
+      $display("tb_fetch: test_double_redirect");
+      test_double_redirect();
+    end
+    $display("tb_fetch: test_length (0..15)");
     for (int len = 0; len < 16; len++) test_length(len);
 
     $display("tb_fetch: latency %0d, ready toggle %0d: %0d errors", LATENCY, READY_TOGGLE, errors);

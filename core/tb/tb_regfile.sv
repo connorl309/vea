@@ -1,6 +1,8 @@
 //! Testbench for vea_regfile.
 
-module tb_regfile;
+module tb_regfile #(
+  parameter int SEED = 0
+);
   localparam int NUM_REGS = 32;
 
   logic clk = 1'b0;
@@ -90,8 +92,8 @@ module tb_regfile;
       raddr_b = rand_addr();
       #1;
 
-      want_a = (wr_en && wr_addr == raddr_a) ? wr_data : model[raddr_a];
-      want_b = (wr_en && wr_addr == raddr_b) ? wr_data : model[raddr_b];
+      want_a = model[raddr_a];
+      want_b = model[raddr_b];
       check64(rdata_a, want_a, $sformatf("random cycle %0d, port a, r%0d", n, raddr_a));
       check64(rdata_b, want_b, $sformatf("random cycle %0d, port b, r%0d", n, raddr_b));
 
@@ -130,10 +132,10 @@ module tb_regfile;
     check64(rdata_b, pattern(7), "r7 after a write with wr_en low");
   endtask
 
-  // The new value must reach a read of the same register before the clock edge, on each
-  // port. A read of another register must return the stored value. This test needs the
-  // values from test_all_registers.
-  task automatic test_write_through();
+  // A read of the register the write port is writing this same cycle must still return
+  // the old value, on each port: there is no same-cycle bypass. The write must still
+  // reach the array at the next edge. This test needs the values from test_all_registers.
+  task automatic test_no_bypass();
     logic [63:0] fresh;
 
     fresh   = ~pattern(3);
@@ -142,18 +144,18 @@ module tb_regfile;
     wr_data = fresh;
 
     read_regs(5'd3, 5'd4);
-    check64(rdata_a, fresh,       "write-through on port a");
+    check64(rdata_a, pattern(3),  "no bypass on port a");
     check64(rdata_b, pattern(4),  "port b read of r4 during a write to r3");
 
     read_regs(5'd4, 5'd3);
     check64(rdata_a, pattern(4),  "port a read of r4 during a write to r3");
-    check64(rdata_b, fresh,       "write-through on port b");
+    check64(rdata_b, pattern(3),  "no bypass on port b");
 
     read_regs(5'd3, 5'd3);
-    check64(rdata_a, fresh,       "write-through on port a, same register on both ports");
-    check64(rdata_b, fresh,       "write-through on port b, same register on both ports");
+    check64(rdata_a, pattern(3),  "no bypass on port a, same register on both ports");
+    check64(rdata_b, pattern(3),  "no bypass on port b, same register on both ports");
 
-    // The write must also reach the array.
+    // The write must still reach the array.
     tick();
     wr_en = 1'b0;
     read_regs(5'd3, 5'd4);
@@ -162,11 +164,18 @@ module tb_regfile;
   endtask
 
   initial begin
+    process::self().srandom(SEED);
+    $display("tb_regfile: seed %0d", SEED);
+    $display("tb_regfile: test_power_up");
     test_power_up();
+    $display("tb_regfile: test_random");
     test_random(50000);
+    $display("tb_regfile: test_all_registers");
     test_all_registers();
+    $display("tb_regfile: test_write_enable");
     test_write_enable();
-    test_write_through();
+    $display("tb_regfile: test_no_bypass");
+    test_no_bypass();
 
     $display("tb_regfile: %0d checks, %0d errors", checks, errors);
     if (errors != 0) $fatal(1, "tb_regfile failed");
