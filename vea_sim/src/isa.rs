@@ -8,6 +8,8 @@
 // To what byte-alignment is every instruction?
 // For now, it is 4 byte aligned, so every fetch
 // will PC = (PC + length) rounded up to the next multiple of 4.
+// The PC is always a multiple of ALIGNMENT. A taken branch must keep this true.
+// See `check_branch_target`.
 pub const ALIGNMENT: u64 = 0x4;
 // How many registers does Vea support?
 pub const NUM_REGS: usize = 32;
@@ -52,6 +54,17 @@ impl VeaReg {
 // padding.
 pub fn align_up(v: u64, a: u64) -> u64 {
     (v + a - 1) / a * a
+}
+
+// A taken branch loads its target into the PC. The RTL keeps only the upper PC
+// bits, so a target with a low bit set must fault here and not fetch from a
+// wrong address. A branch that is not taken never loads its target, so it does
+// not call this.
+pub fn check_branch_target(target: u64) -> crate::error::Result<u64> {
+    if target % ALIGNMENT != 0 {
+        return crate::sim_err!("branch target {target:#018x} is not {ALIGNMENT}-byte aligned");
+    }
+    Ok(target)
 }
 
 // Length of the whole instruction in bytes. It is the high nibble of opinfo.

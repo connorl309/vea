@@ -121,18 +121,19 @@ impl Processor {
             // b / beq / bne / blt / bge / bgt / ble : predicate in the flag nibble
             // An immediate target is a signed offset from the branch's own
             // address; a register target is an absolute address.
+            // A taken branch must land on an aligned address.
             0x30 => {
                 let opinfo = memory::read(pc + 1, 1)? as u8;
                 let (dest, len) = self.target(pc, Rel::Relative)?;
                 if predicate(opinfo & BR_MASK)?(&self.cc) {
-                    Step::Jump(dest)
+                    Step::Jump(isa::check_branch_target(dest)?)
                 } else {
                     Step::Next(len)
                 }
             }
 
             // jmp : unconditional, always an absolute target.
-            0x31 => Step::Jump(self.target(pc, Rel::Absolute)?.0),
+            0x31 => Step::Jump(isa::check_branch_target(self.target(pc, Rel::Absolute)?.0)?),
 
             // ld : reg <- mem[base + (disp | index)], width and sign from the flags
             0x40 => {

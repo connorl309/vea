@@ -19,6 +19,7 @@ impl Processor {
         };
         let op = self.decode_op(frame.pc, &frame.bytes)?;
         if let DecodedOp::Branch { taken: true, target } = op {
+            isa::check_branch_target(target)?;
             self.redirect_fetch(target);
         }
         if op == DecodedOp::Halt {
@@ -327,8 +328,8 @@ mod tests {
     fn branch_to_a_register_is_always_absolute() {
         let _seq = memory::test_guard();
         let mut p = load("b r1\n");
-        p.regs[1] = 0xCAFE_BABE_DEAD_BEEF;
-        assert_eq!(step(&mut p), DecodedOp::Branch { taken: true, target: 0xCAFE_BABE_DEAD_BEEF });
+        p.regs[1] = 0xCAFE_BABE_DEAD_BEEC;
+        assert_eq!(step(&mut p), DecodedOp::Branch { taken: true, target: 0xCAFE_BABE_DEAD_BEEC });
         memory::reset();
     }
 
