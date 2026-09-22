@@ -64,6 +64,10 @@ jobs:
         working-directory: core
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: vea_sim
       - name: Install Verilator
         run: |
           sudo apt-get update

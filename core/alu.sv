@@ -91,16 +91,18 @@ module vea_alu
         flags_next.overflow = sub_overflow;
       end
 
-      // MUL and DIV are legal opcodes with no silicon. Trip an assertion so a simulation
-      // flags them instead of silently returning zero.
       ALU_MUL: begin
-        unsupported = 1'b1;
-        assert (1'b0); $display("vea_alu: MUL has no silicon (op %h)", op);
+        result = a * b;
       end
 
+      // TODO: Come up with a not-shitty division idea here.
+      // We will probably need to feed a (faster) clock into
+      // this ALU module in order to pipeline the divider unit.
+      // Xilinx is cool enough that we can just use a multiply
+      // block for the MUL instruction though.
       ALU_DIV: begin
         unsupported = 1'b1;
-        assert (1'b0); $display("vea_alu: DIV has no silicon (op %h)", op);
+        /*assert (1'b0);*/ $display("vea_alu: DIV has no silicon (op %h)", op);
       end
 
       default: unsupported = 1'b1;

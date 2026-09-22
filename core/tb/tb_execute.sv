@@ -35,14 +35,16 @@ module tb_execute #(
   logic         wb_redirect_valid;
   logic [63:2]  wb_redirect_pc;
 
-  logic         mem_req_valid;
-  logic         mem_req_ready;
-  logic [63:0]  mem_addr;
-  logic         mem_we;
-  logic [1:0]   mem_size;
-  logic [63:0]  mem_wdata;
-  logic         mem_rvalid = 1'b0;
-  logic [63:0]  mem_rdata = '0;
+  logic         err_illegal;
+  logic         err_unsupported;
+  logic         err_trap;
+  logic         err_unaligned;
+
+  logic              mem_req_valid;
+  logic              mem_req_ready;
+  vea_pkg::mem_req_t mem_req;
+  logic              mem_rvalid = 1'b0;
+  logic [63:0]       mem_rdata = '0;
 
   vea_execute dut (.*);
 
@@ -83,6 +85,7 @@ module tb_execute #(
     logic        is_load, is_store;
     logic [1:0]  mem_size;
     logic        mem_sext;
+    logic        is_trap;
     logic        illegal;
   } insn_t;
 
@@ -100,6 +103,7 @@ module tb_execute #(
     ex_is_store  = i.is_store;
     ex_mem_size  = i.mem_size;
     ex_mem_sext  = i.mem_sext;
+    ex_is_trap   = i.is_trap;
     ex_illegal   = i.illegal;
   endtask
 
@@ -122,8 +126,8 @@ module tb_execute #(
   localparam logic [3:0] OP_SAR = 4'h8, OP_MUL = 4'h9, OP_DIV = 4'hA;
   localparam logic [3:0] OP_CMP = 4'hB, OP_CMP_S = 4'hC;
 
-  // MUL and DIV, and any op the ALU does not define, must raise unsupported and must not
-  // reach the register file.
+  // DIV, and any op the ALU does not define, must raise unsupported and must not reach
+  // the register file. MUL has real silicon (a plain 64x64 multiply, low bits kept).
   task automatic ref_alu(input logic [3:0] op, input logic [63:0] a, input logic [63:0] b,
                          output logic [63:0] result, output logic unsupp);
     result = '0;
@@ -138,6 +142,7 @@ module tb_execute #(
       OP_SHL:            result = a << b[5:0];
       OP_SHR:            result = a >> b[5:0];
       OP_SAR:            result = $signed(a) >>> b[5:0];
+      OP_MUL:            result = a * b;
       OP_CMP, OP_CMP_S:  result = '0;
       default:           unsupp = 1'b1;
     endcase
@@ -226,9 +231,9 @@ module tb_execute #(
         end
       end
       if (mem_req_valid && mem_req_ready) begin
-        if (mem_we) mem_write(mem_addr, mem_wdata, mem_size);
-        m_addr_q <= mem_addr;
-        m_size_q <= mem_size;
+        if (mem_req.we) mem_write(mem_req.addr, mem_req.wdata, mem_req.size);
+        m_addr_q <= mem_req.addr;
+        m_size_q <= mem_req.size;
         m_cnt    <= $urandom_range(1, 3);
         m_busy   <= 1'b1;
       end
@@ -307,18 +312,23 @@ module tb_execute #(
     check64(64'(dut.cc),          64'd0, "cc after reset");
     check64(64'(int'(dut.state)), 64'd0, "state after reset (S_IDLE)");
     check64(64'(ex_ready),        64'd1, "ex_ready high when idle and ex_valid low");
+    check64(64'(err_illegal),     64'd0, "err_illegal after reset");
+    check64(64'(err_unsupported), 64'd0, "err_unsupported after reset");
+    check64(64'(err_trap),        64'd0, "err_trap after reset");
+    check64(64'(err_unaligned),   64'd0, "err_unaligned after reset");
   endtask
 
-  // Every ALU op, at directed and random operand values, against ref_alu. Also checks
-  // that wr_en low suppresses the write even though the ALU still runs.
+  // Every ALU op that does not stop the core, at directed and random operand values,
+  // against ref_alu. Also checks that wr_en low suppresses the write even though the ALU
+  // still runs. DIV has its own test, since it stops the core (test_unsupported_stops).
   task automatic test_alu_writeback();
-    logic [3:0]  ops [11];
+    logic [3:0]  ops [10];
     logic [63:0] av, bv;
     insn_t       i;
 
-    ops = '{OP_ADD, OP_SUB, OP_AND, OP_OR, OP_NOT, OP_XOR, OP_SHL, OP_SHR, OP_SAR, OP_MUL, OP_DIV};
+    ops = '{OP_ADD, OP_SUB, OP_AND, OP_OR, OP_NOT, OP_XOR, OP_SHL, OP_SHR, OP_SAR, OP_MUL};
 
-    for (int o = 0; o < 11; o++) begin
+    for (int o = 0; o < 10; o++) begin
       for (int n = 0; n < 20; n++) begin
         av = (n == 0) ? 64'h0 : (n == 1) ? 64'hFFFF_FFFF_FFFF_FFFF : {$urandom, $urandom};
         bv = (n == 0) ? 64'h0 : {$urandom, $urandom};
@@ -341,8 +351,24 @@ module tb_execute #(
     retire("add with wr_en low", i);
   endtask
 
+  // After a fault stops the core, Execute must never assert ex_ready again: drives a
+  // harmless ADD and confirms it is refused for several cycles.
+  task automatic check_stuck(input string name);
+    insn_t i;
+    i        = '{default: '0};
+    i.alu_op = OP_ADD;
+    i.a      = 64'd1;
+    i.b      = 64'd1;
+    drive(i);
+    for (int c = 0; c < 5; c++) begin
+      tick();
+      check64(64'(ex_ready), 64'b0, {name, ": ex_ready stays low once the core has stopped"});
+    end
+    ex_valid = 1'b0;
+  endtask
+
   // ex_illegal must suppress the write and the redirect, even when the other fields ask
-  // for both.
+  // for both, and it must stop the core: nothing after it may ever retire.
   task automatic test_illegal();
     insn_t i;
     i           = '{default: '0};
@@ -361,6 +387,50 @@ module tb_execute #(
     check64(64'(wb_redirect_valid), 64'b0, "illegal instruction: no redirect");
     tick();
     ex_valid = 1'b0;
+    check64(64'(err_illegal), 64'b1, "err_illegal latches after an illegal instruction");
+    check_stuck("illegal");
+    do_reset();
+  endtask
+
+  // DIV is a legal opcode with no silicon: it must raise alu_unsupported, suppress the
+  // write, and stop the core the same way an illegal instruction does.
+  task automatic test_unsupported_stops();
+    insn_t i;
+    i        = '{default: '0};
+    i.alu_op = OP_DIV;
+    i.a      = 64'd10;
+    i.b      = 64'd3;
+    i.wr_en  = 1'b1;
+    i.rd     = 5'd4;
+
+    drive(i);
+    wait_ready();
+    check64(64'(wb_valid), 64'b0, "div: no write");
+    tick();
+    ex_valid = 1'b0;
+    check64(64'(err_unsupported), 64'b1, "err_unsupported latches after div");
+    check_stuck("unsupported");
+    do_reset();
+  endtask
+
+  // TRAP has no vector yet: it must retire with no write and no redirect, latch
+  // err_trap, and stop the core, the same as illegal and unsupported.
+  task automatic test_trap_stops();
+    insn_t i;
+    i         = '{default: '0};
+    i.alu_op  = OP_ADD;
+    i.a       = 64'h5;
+    i.is_trap = 1'b1;
+
+    drive(i);
+    wait_ready();
+    check64(64'(wb_valid),          64'b0, "trap: no write");
+    check64(64'(wb_redirect_valid), 64'b0, "trap: no redirect");
+    tick();
+    ex_valid = 1'b0;
+    check64(64'(err_trap), 64'b1, "err_trap latches after a trap");
+    check_stuck("trap");
+    do_reset();
   endtask
 
   // A CMP or CMP_S, then every predicate. eq and lt come from the operands directly, not
@@ -406,6 +476,33 @@ module tb_execute #(
         bi.is_branch = 1'b1;
         bi.pred      = 3'(p);
         retire_branch($sformatf("cmp.s %0d/%0d pred %0d", k, p, p), bi, ref_taken(3'(p), eq, lt_s));
+      end
+    end
+  endtask
+
+  // A taken branch or jump whose target lands off a 4-byte boundary must not redirect,
+  // and must latch err_unaligned. One case per low-bit pattern, plus one aligned control
+  // case that must redirect and must not latch it.
+  task automatic test_unaligned_branch();
+    insn_t bi;
+
+    for (int off = 0; off < 4; off++) begin
+      bi           = '{default: '0};
+      bi.alu_op    = OP_ADD;
+      bi.a         = (64'h1000 + 64'(off)) & ~64'h3;
+      bi.b         = 64'(off);
+      bi.is_branch = 1'b1;
+      bi.pred      = PRED_ALWAYS;
+      drive(bi);
+      wait_ready();
+      check64(64'(wb_redirect_valid), 64'(off == 0),
+              $sformatf("unaligned +%0d: wb_redirect_valid", off));
+      tick();
+      ex_valid = 1'b0;
+      check64(64'(err_unaligned), 64'(off != 0), $sformatf("unaligned +%0d: err_unaligned", off));
+      if (off != 0) begin
+        check_stuck($sformatf("unaligned +%0d", off));
+        do_reset(); // clear the latch so the next offset starts clean
       end
     end
   endtask
@@ -512,7 +609,7 @@ module tb_execute #(
     for (int c = 0; c < 5; c++) begin
       tick();
       check64(64'(mem_req_valid), 64'b1, "mem_req_valid must hold while the memory is not ready");
-      check64(mem_addr,           addr,  "mem_addr must hold while the memory is not ready");
+      check64(mem_req.addr,       addr,  "mem_req.addr must hold while the memory is not ready");
       check64(64'(ex_ready),      64'b0, "ex_ready must stay low while the request is not accepted");
     end
     mem_gate = 1'b1;
@@ -532,8 +629,14 @@ module tb_execute #(
     test_alu_writeback();
     $display("tb_execute: test_illegal");
     test_illegal();
+    $display("tb_execute: test_unsupported_stops");
+    test_unsupported_stops();
+    $display("tb_execute: test_trap_stops");
+    test_trap_stops();
     $display("tb_execute: test_branch");
     test_branch();
+    $display("tb_execute: test_unaligned_branch");
+    test_unaligned_branch();
     $display("tb_execute: test_cc_persistence");
     test_cc_persistence();
     $display("tb_execute: test_load");

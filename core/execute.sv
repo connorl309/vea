@@ -8,8 +8,10 @@
 //!
 //! See tb/tb_execute.sv for the testbench.
 //!
-//! TODO: trap and illegal have no defined target yet; the reference sim does not
-//! implement them either. Both just retire with no write and no redirect.
+//! An illegal instruction, an unsupported op, a trap or a misaligned branch target all
+//! stop the core for good: no write, no redirect, and no later instruction is ever
+//! accepted again, since there is nowhere defined yet for any of them to continue to.
+//! TODO: trap needs a real vector once one exists, instead of stopping.
 
 module vea_execute (
   input  logic clk,
@@ -18,7 +20,10 @@ module vea_execute (
   //! Decode drives these. ex_illegal means every other ex_ input except ex_pc is
   //! undefined, so Execute must fault on it before it reads them.
   input  logic         ex_valid,
+  // No fault target exists yet, so no trap or illegal reads the faulting address.
+  /* verilator lint_off UNUSEDSIGNAL */
   input  logic [63:0]  ex_pc,
+  /* verilator lint_on UNUSEDSIGNAL */
   input  logic [3:0]   ex_alu_op,
   input  logic [63:0]  ex_a,
   input  logic [63:0]  ex_b,
@@ -32,7 +37,10 @@ module vea_execute (
   input  logic [1:0]   ex_mem_size,
   input  logic         ex_mem_sext,
   input  logic         ex_is_trap,
+  // HALT needs no action here, since Decode's latch already stops Fetch.
+  /* verilator lint_off UNUSEDSIGNAL */
   input  logic         ex_is_halt,
+  /* verilator lint_on UNUSEDSIGNAL */
   input  logic         ex_illegal,
   output logic         ex_ready,
 
@@ -44,18 +52,21 @@ module vea_execute (
   output logic         wb_redirect_valid,
   output logic [63:2]  wb_redirect_pc,
 
-  //! Generic load/store port to vea_mem_if. One request in flight at a time, as in
-  //! Fetch's imem port.
-  output logic         mem_req_valid,
-  input  logic         mem_req_ready,
-  output logic [63:0]  mem_addr,
-  output logic         mem_we,
-  output logic [1:0]   mem_size,
-  output logic [63:0]  mem_wdata,
-  input  logic         mem_rvalid,
-  input  logic [63:0]  mem_rdata
-);
+  //! Status for board-level indicators, for example LEDs. Each latches on its first
+  //! cycle and holds until reset, so a one-cycle event stays visible.
+  output logic         err_illegal,
+  output logic         err_unsupported,
+  output logic         err_trap,
+  output logic         err_unaligned,
 
+  //! Generic load/store port to vea_mem_if. One request in flight at a time, as in
+  //! Fetch's imem port. See vea_pkg for the fields of mem_req.
+  output logic               mem_req_valid,
+  input  logic               mem_req_ready,
+  output vea_pkg::mem_req_t  mem_req,
+  input  logic               mem_rvalid,
+  input  logic [63:0]        mem_rdata
+);
   // ---- ALU -----------------------------------------------------------------------
 
   logic [63:0] alu_result;
@@ -73,16 +84,28 @@ module vea_execute (
     .unsupported (alu_unsupported)
   );
 
-  //! High for a legal, present instruction. Everything below reads this instead of
-  //! ex_valid, since ex_illegal makes the other ex_ fields undefined.
+  //! Any fault stops the core for good, so this also gates out whatever instruction is
+  //! stuck behind it: without this, a legal instruction that Decode already handed to
+  //! Execute the same cycle the fault latched would keep re-completing forever, since
+  //! ex_ready alone (below) only blocks the *next* one from being accepted.
+  logic stopped;
+
+  assign stopped = err_illegal | err_unsupported | err_trap | err_unaligned;
+
+  //! High for a legal, present instruction, and only once the core has not stopped.
+  //! Everything below reads this instead of ex_valid, since ex_illegal makes the other
+  //! ex_ fields undefined.
   logic valid_op;
 
-  assign valid_op = ex_valid && !ex_illegal;
+  assign valid_op = ex_valid && !ex_illegal && !stopped;
 
   // ---- Condition codes -------------------------------------------------------------
 
-  //! CMP and CMP_S write this register so a later branch can read it.
+  //! CMP and CMP_S write this register so a later branch can read it. Its layout matches
+  //! the simulator's condition codes; only zero, neg and overflow feed a predicate below.
+  /* verilator lint_off UNUSEDSIGNAL */
   logic [3:0] cc;
+  /* verilator lint_on UNUSEDSIGNAL */
 
   always_ff @(posedge clk) begin
     if (!rst_n)
@@ -123,7 +146,7 @@ module vea_execute (
 
   // ---- Memory ------------------------------------------------------------------------
 
-  //! A load or a store takes two cycles: request, then reply.
+  //! A load or a store takes two+ cycles: request, then reply.
   typedef enum logic { S_IDLE, S_MEM_WAIT } mem_state_t;
 
   mem_state_t state, next_state;
@@ -146,10 +169,8 @@ module vea_execute (
   end
 
   assign mem_req_valid = (state == S_IDLE) && mem_op;
-  assign mem_addr      = alu_result;
-  assign mem_we        = ex_is_store;
-  assign mem_size      = ex_mem_size;
-  assign mem_wdata     = ex_c;
+  // A plain concatenation, field order MSB first as in vea_pkg::mem_req_t
+  assign mem_req       = {alu_result, ex_is_store, ex_mem_size, ex_c};
 
   // Matches the opinfo size field (LS_SIZE_D/B/H/W). A narrow load sits low in
   // mem_rdata; the rest is sign- or zero-extended.
@@ -179,9 +200,22 @@ module vea_execute (
   logic completing;
 
   assign completing = (state == S_IDLE) ? !mem_op : mem_rvalid;
-  assign ex_ready   = completing;
 
-  assign wb_redirect_valid = completing && valid_op && ex_is_branch && branch_taken;
+  //! Execute stops asserting ex_ready once stopped, so Decode's stage register can
+  //! never empty, so its frame_ready never asserts again, so Fetch never requests
+  //! another frame. No separate stop wire to Fetch or Decode is needed. The err_ bits
+  //! are registered, so the faulting instruction itself still completes this cycle;
+  //! only the next one is refused.
+  assign ex_ready = completing && !stopped;
+
+  //! B and JMP form a target from a register or an immediate, either of which can land
+  //! off a 4-byte boundary. Fetch only ever sees the aligned bits (redirect_pc is
+  //! [63:2]), so a misaligned target must fault here, before the low bits are dropped.
+  logic pc_misaligned;
+
+  assign pc_misaligned     = valid_op && ex_is_branch && branch_taken && |alu_result[1:0];
+  assign wb_redirect_valid = completing && valid_op && ex_is_branch && branch_taken
+                            && !pc_misaligned;
   assign wb_redirect_pc    = alu_result[63:2];
 
   // MUL/DIV decode as legal, but vea_alu has no silicon for them and raises
@@ -189,5 +223,21 @@ module vea_execute (
   assign wb_valid = completing && valid_op && ex_wr_en && !alu_unsupported;
   assign wb_rd    = ex_rd;
   assign wb_data  = ex_is_load ? load_value : alu_result;
+
+  // ---- Status indicators ---------------------------------------------
+
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      err_illegal     <= 1'b0;
+      err_unsupported <= 1'b0;
+      err_trap        <= 1'b0;
+      err_unaligned   <= 1'b0;
+    end else begin
+      if (completing && ex_valid && ex_illegal)      err_illegal     <= 1'b1;
+      if (completing && valid_op && alu_unsupported) err_unsupported <= 1'b1;
+      if (completing && valid_op && ex_is_trap)      err_trap        <= 1'b1;
+      if (completing && pc_misaligned)                err_unaligned   <= 1'b1;
+    end
+  end
 
 endmodule
