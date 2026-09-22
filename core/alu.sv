@@ -95,12 +95,12 @@ module vea_alu
       // flags them instead of silently returning zero.
       ALU_MUL: begin
         unsupported = 1'b1;
-        assert (1'b0) else $display("vea_alu: MUL has no silicon (op %h)", op);
+        assert (1'b0); $display("vea_alu: MUL has no silicon (op %h)", op);
       end
 
       ALU_DIV: begin
         unsupported = 1'b1;
-        assert (1'b0) else $display("vea_alu: DIV has no silicon (op %h)", op);
+        assert (1'b0); $display("vea_alu: DIV has no silicon (op %h)", op);
       end
 
       default: unsupported = 1'b1;
