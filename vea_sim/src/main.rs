@@ -22,8 +22,8 @@ enum Cmd {
     Asm(AsmArgs),
     // Open a program in the interactive TUI (also the default with no arguments)
     Run(RunArgs),
-    // Run a program to halt on the onestep simulator and dump its final registers.
-    // The RTL testbench uses this as its golden oracle: same program, same check.
+    // Run a program on the onestep simulator to halt. Print its final registers.
+    // The RTL testbench uses this output as its golden oracle.
     Conform(ConformArgs),
 }
 
@@ -43,7 +43,7 @@ struct AsmArgs {
 struct ConformArgs {
     // Source path, or - to read stdin
     input: String,
-    // Instruction budget before giving up on halting
+    // Number of instructions to try before giving up on halting
     #[arg(long, default_value_t = 100_000)]
     cap: u64,
 }
@@ -85,8 +85,9 @@ fn main() -> ExitCode {
     }
 }
 
-// Shared by every subcommand that takes a source path: `-` reads stdin, anything
-// else is a file path. `who` names the subcommand, for the error prefix.
+// Every subcommand that takes a source path uses this function.
+// `-` reads stdin. Any other value is a file path. `who` names the subcommand. It is
+// used as the error prefix.
 fn read_source(who: &str, input: &str) -> Result<String, ExitCode> {
     if input == "-" {
         let mut s = String::new();
@@ -138,9 +139,10 @@ fn cmd_asm(args: AsmArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-// Assembles, runs to halt on the onestep simulator, and prints the final register
-// file: one 16-digit hex value per line, r0 first. That is plain $readmemh format,
-// so the RTL testbench can load it straight into a 32-entry array and compare.
+// Assembles the program. Runs it to halt on the onestep simulator. Prints the final
+// register file: one 16-digit hex value per line, r0 first.
+// This is plain $readmemh format. The RTL testbench loads it straight into a
+// 32-entry array to compare.
 fn cmd_conform(args: ConformArgs) -> ExitCode {
     let src = match read_source("conform", &args.input) {
         Ok(s) => s,

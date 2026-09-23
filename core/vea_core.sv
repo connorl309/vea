@@ -4,7 +4,11 @@
 
 module vea_core #(
   parameter int          MAX_INSN_BYTES = 13,
-  parameter logic [63:2] RESET_PC       = '0
+  parameter logic [63:2] RESET_PC       = '0,
+  //! Test-only. 0 (the default) always picks the real vea_mem_if, bit-accurate to real
+  //! hardware. Real boards and `make synth` never set this to 1. See
+  //! core/tb/sim_fast_mem.sv for what 1 picks instead, and why.
+  parameter bit           SIM_FAST_MEM   = 1'b0
 ) (
   input  logic clk,
   input  logic rst_n,
@@ -204,18 +208,40 @@ module vea_core #(
     .rdata_b (rf_rdata_b)
   );
 
-  vea_mem_if u_mem_if (
-    .clk       (clk),
-    .rst_n     (rst_n),
-    .req_valid (dmem_req_valid),
-    .req_ready (dmem_req_ready),
-    .req       (dmem_req),
-    .rvalid    (dmem_rvalid),
-    .rdata     (dmem_rdata),
-    .spi_sck   (dmem_spi_sck),
-    .spi_cs_n  (dmem_spi_cs_n),
-    .spi_mosi  (dmem_spi_mosi),
-    .spi_miso  (dmem_spi_miso)
-  );
+  //! SIM_FAST_MEM picks the data memory engine. 0 (the default, always used for real
+  //! hardware) picks the real vea_mem_if below, with the real SPI pins. 1 picks a
+  //! sim-only stand-in instead, with no SPI pins and no wait for the bit-serial
+  //! protocol. See core/tb/sim_fast_mem.sv.
+  generate
+    if (SIM_FAST_MEM) begin : g_mem_if
+      assign dmem_spi_sck  = 1'b0;
+      assign dmem_spi_cs_n = 1'b1;
+      assign dmem_spi_mosi = 1'b0;
+
+      vea_sim_fast_mem u_mem_if (
+        .clk       (clk),
+        .rst_n     (rst_n),
+        .req_valid (dmem_req_valid),
+        .req_ready (dmem_req_ready),
+        .req       (dmem_req),
+        .rvalid    (dmem_rvalid),
+        .rdata     (dmem_rdata)
+      );
+    end else begin : g_mem_if
+      vea_mem_if u_mem_if (
+        .clk       (clk),
+        .rst_n     (rst_n),
+        .req_valid (dmem_req_valid),
+        .req_ready (dmem_req_ready),
+        .req       (dmem_req),
+        .rvalid    (dmem_rvalid),
+        .rdata     (dmem_rdata),
+        .spi_sck   (dmem_spi_sck),
+        .spi_cs_n  (dmem_spi_cs_n),
+        .spi_mosi  (dmem_spi_mosi),
+        .spi_miso  (dmem_spi_miso)
+      );
+    end
+  endgenerate
 
 endmodule

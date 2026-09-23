@@ -1,5 +1,5 @@
 # Runs the Verilator testbenches and the Yosys synthesis report for Xilinx FPGAs.
-# Usage: make [all|fetch|decode|execute|writeback|regfile|mem_if|core|conform|synth|clean]
+# Usage: make [all|fetch|decode|execute|writeback|regfile|mem_if|core|conform|run|waves|synth|clean]
 
 VERILATOR ?= verilator
 YOSYS ?= yosys
@@ -32,7 +32,7 @@ VFLAGS := --binary --timing --timescale 1ns/1ps -Wno-fatal -Wno-lint -Wno-style 
 FETCH_LATENCIES := 1 2 3 4
 FETCH_TOGGLES   := 0 1
 
-.PHONY: all alu fetch decode execute writeback regfile mem_if core run conform synth clean
+.PHONY: all alu fetch decode execute writeback regfile mem_if core run waves conform synth clean
 
 # The run continues after a failure, so one run shows every testbench result.
 all:
@@ -86,7 +86,7 @@ core:
 	@mkdir -p build; echo "== core"; \
 	  $(VERILATOR) $(VFLAGS)  --top-module tb_core --Mdir build/core \
 	    $(PKG_FILES:%=%.sv) $(RTL_FILES:%=%.sv) vea_core.sv $(TB)/tb_spi_mem.sv \
-	    $(TB)/tb_core.sv > /dev/null \
+	    $(TB)/sim_fast_mem.sv $(TB)/tb_core.sv > /dev/null \
 	  && ./build/core/Vtb_core
 
 # Assembles $(SRC) with the vea_sim CLI and runs it through vea_core to halt, dumping
@@ -100,28 +100,51 @@ run:
 	@$(VEA_SIM_BIN) asm $(SRC) > build/run.hex
 	@$(VERILATOR) $(VFLAGS) --top-module tb_core --Mdir build/run_core \
 	  $(PKG_FILES:%=%.sv) $(RTL_FILES:%=%.sv) vea_core.sv $(TB)/tb_spi_mem.sv \
-	  $(TB)/tb_core.sv > /dev/null
+	  $(TB)/sim_fast_mem.sv $(TB)/tb_core.sv > /dev/null
 	@./build/run_core/Vtb_core +prog=build/run.hex
 
-# Builds the vea_sim/tests/*.s corpus (hex image + `vea_sim conform`'s expected final
-# registers, per program) and runs the whole thing through vea_core in one pass
-# (tb/tb_core.sv's +conform_dir handling): the RTL and the reference simulator must
-# agree on every register a program ends with, not just the ones a `;=` checkpoint
-# names. Needs cargo, like `run`.
+# Same as `run`, but with a waveform dump, opened in GTKWave. Needs cargo and gtkwave.
+# Usage: make waves SRC=../vea_sim/tests/sample_basics.s
+waves:
+	@test -n "$(SRC)" || { echo "usage: make waves SRC=path/to/prog.s"; exit 1; }
+	@mkdir -p build
+	@cargo build --release --manifest-path $(VEA_SIM_DIR)/Cargo.toml -q
+	@$(VEA_SIM_BIN) asm $(SRC) > build/waves.hex
+	@$(VERILATOR) $(VFLAGS) --trace-vcd --top-module tb_core --Mdir build/waves_core \
+	  $(PKG_FILES:%=%.sv) $(RTL_FILES:%=%.sv) vea_core.sv $(TB)/tb_spi_mem.sv \
+	  $(TB)/sim_fast_mem.sv $(TB)/tb_core.sv > /dev/null
+	@./build/waves_core/Vtb_core +prog=build/waves.hex +trace=build/wave.vcd
+	gtkwave build/wave.vcd
+
+# run_all_instrs_all_modes uses div. vea_alu has no divide silicon yet (see its own TODO
+# comment). The RTL cannot run this program yet, so it is skipped here.
+# vea_sim's own `cargo test` still covers this program in full.
+CONFORM_SKIP := run_all_instrs_all_modes
+
+# Builds the vea_sim/tests/*.s corpus: a hex image and a `vea_sim conform` expected-
+# register file, for each program. Runs the whole corpus through vea_core in one pass
+# (tb/tb_core.sv's +conform_dir mode).
+# The RTL and the reference simulator must agree on every register, not just the ones
+# a `;=` checkpoint names. This target needs cargo, like `run` does.
+# Builds with SIM_FAST_MEM=1 (see vea_core.sv): this corpus checks pipeline and ISA
+# correctness, not the SPI wire protocol, so it skips the real, slow SPI wait on every
+# load and store. tb_mem_if.sv still checks the real protocol, at real speed.
 conform:
 	@mkdir -p build/conform
 	@cargo build --release --manifest-path $(VEA_SIM_DIR)/Cargo.toml -q
 	@rm -f build/conform/manifest.txt
 	@for f in $(VEA_SIM_DIR)/tests/*.s; do \
 	  name=$$(basename $$f .s); \
+	  skip=0; for s in $(CONFORM_SKIP); do [ "$$name" = "$$s" ] && skip=1; done; \
+	  [ "$$skip" = 1 ] && continue; \
 	  $(VEA_SIM_BIN) asm $$f > build/conform/$$name.hex || exit 1; \
 	  $(VEA_SIM_BIN) conform $$f > build/conform/$$name.expect || exit 1; \
 	  echo $$name >> build/conform/manifest.txt; \
 	done
 	@echo "== conform ($$(wc -l < build/conform/manifest.txt) programs)"
-	@$(VERILATOR) $(VFLAGS) --top-module tb_core --Mdir build/conform_core \
+	@$(VERILATOR) $(VFLAGS) -GSIM_FAST_MEM=1 --top-module tb_core --Mdir build/conform_core \
 	  $(PKG_FILES:%=%.sv) $(RTL_FILES:%=%.sv) vea_core.sv $(TB)/tb_spi_mem.sv \
-	  $(TB)/tb_core.sv > /dev/null
+	  $(TB)/sim_fast_mem.sv $(TB)/tb_core.sv > /dev/null
 	@./build/conform_core/Vtb_core +conform_dir=build/conform
 
 # Gets cell counts for each module (roughly). Every file is read every time.

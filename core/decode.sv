@@ -353,9 +353,11 @@ module vea_decode #(
   // The register file has two read ports, so a store with an index register reads its
   // value in a cycle of its own.
   assign need_value = s2_valid & s2.idx_store & ~value_done;
-  // Stage 2 reads the value only when Execute is ready. When Execute is not ready, an
-  // older instruction can still work, but the register file does not have its result
-  // yet. A store read at this point captures a stale value.
+  // Stage 2 reads the value the same cycle Execute frees up. That can be the same cycle
+  // the value's source instruction (often a load) commits it. Execute's own multi-cycle
+  // wait already staged this instruction with nothing else to do.
+  // This is safe only because vea_regfile bypasses its write port straight to both read
+  // ports.
   assign read_value = need_value & ex_ready;
   assign can_issue  = s2_valid & ~need_value;
 

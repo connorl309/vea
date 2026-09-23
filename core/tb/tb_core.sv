@@ -9,19 +9,29 @@
 //! byte arrays so this test needs no Rust toolchain at simulation time. Re-run
 //! `vea_sim asm <prog>.s` by hand and re-paste if a program or the encoding changes.
 //!
-//! +prog=<path> (see `make run SRC=...`) instead runs one external program to halt and
-//! dumps every register, in place of the built-in suite. Its bytes are read with
-//! $readmemh, the format `vea_sim asm`'s plain stdout output is already in. Add
-//! +expect=<path> (`vea_sim conform`'s output) to check the dump instead of just
-//! printing it.
+//! +prog=<path> (see `make run SRC=...`) runs one program instead of the built-in suite.
+//! It loads the program, runs it to halt, then dumps every register. $readmemh reads the
+//! bytes. This is the same format as `vea_sim asm`'s plain stdout output.
 //!
-//! +conform_dir=<dir> (see `make conform`) instead runs the full vea_sim/tests/*.s
-//! corpus in one pass, checking each program's halted register file against
-//! `vea_sim conform`'s output for that same program: the RTL and the reference
-//! simulator must agree on every register, not just the ones a checkpoint names.
+//! Add +expect=<path> to check the dump instead of just printing it. Use `vea_sim
+//! conform`'s output as this file.
+//!
+//! +conform_dir=<dir> (see `make conform`) runs the full vea_sim/tests/*.s corpus in one
+//! pass. For each program, it checks the halted register file against `vea_sim
+//! conform`'s output for that same program. The RTL and the reference simulator must
+//! agree on every register, not just the ones a checkpoint names.
+//!
+//! Add +trace=<path> (see `make waves`) to also dump a waveform of the run to that
+//! path. Works with any mode above.
 
 module tb_core #(
-  parameter int SEED = 0
+  parameter int SEED          = 0,
+  //! Passed straight to vea_core. 0 (the default) is real timing: a load or a store
+  //! goes through the real vea_mem_if and its SPI protocol, same as real hardware. 1
+  //! swaps in core/tb/sim_fast_mem.sv instead, which drops the wait, for a test that
+  //! only cares about pipeline and ISA correctness. `make conform` builds with this
+  //! set to 1; `make core`, `make run`, and `make waves` leave it at 0.
+  parameter bit SIM_FAST_MEM  = 1'b0
 );
   localparam int MB = 13;
 
@@ -39,7 +49,7 @@ module tb_core #(
 
   logic halt, err_illegal, err_unsupported, err_trap, err_unaligned;
 
-  vea_core #(.MAX_INSN_BYTES(MB)) dut (.*);
+  vea_core #(.MAX_INSN_BYTES(MB), .SIM_FAST_MEM(SIM_FAST_MEM)) dut (.*);
 
   tb_spi_mem #(.MEM_BYTES(65536)) dmem (
     .spi_sck  (dmem_spi_sck),
@@ -98,20 +108,21 @@ module tb_core #(
     reg_val = dut.u_regfile.regs[n];
   endfunction
 
-  // Directly pokes every register to zero. Only a testbench needs this: regfile.sv
-  // deliberately has no reset port (see its own comment - LUT RAM has none, and adding
-  // one would force flip-flops), so between directed tests a register an earlier
-  // program wrote stays nonzero on purpose (test_trap and test_illegal rely on exactly
-  // that to prove a faulted instruction's successor never runs). An arbitrary program
-  // checked against vea_sim's output needs the opposite: vea_sim's own regfile starts
-  // every run at zero (see regfile.sv's initial block), so its dump is only comparable
-  // if this one does too.
+  // Sets every register to zero. This is a testbench-only action.
+  // regfile.sv has no reset port, on purpose (see its own comment): LUT RAM has no
+  // reset input, and a reset here would force flip-flops instead.
+  // Between the directed tests below, a register keeps its value from an earlier
+  // program on purpose. test_trap and test_illegal use that to check that a faulted
+  // instruction's next instruction never runs.
+  // A program checked against vea_sim's output needs a clean start instead. vea_sim's
+  // own register file always starts a run at zero (see regfile.sv's initial block).
+  // This task gives the RTL the same clean start, so the two dumps can be compared.
   task automatic clear_regfile();
     for (int i = 0; i < 32; i++) dut.u_regfile.regs[i] = '0;
   endtask
 
-  // Clears the program area, loads the new one, and resets the core's pipeline and
-  // status latches. The register file is untouched - see clear_regfile().
+  // Clears the program area. Loads the new program. Resets the core's pipeline and
+  // status latches. This task does not touch the register file. See clear_regfile().
   task automatic load_program(input logic [7:0] prog[], input int n);
     for (int i = 0; i < 512; i++) mem[i] = 8'h00;
     for (int i = 0; i < n; i++)   mem[i] = prog[i];
@@ -120,12 +131,11 @@ module tb_core #(
     rst_n = 1'b1;
   endtask
 
-  // Same as load_program, but for an arbitrary file: `vea_sim asm`'s plain stdout output
-  // (hex byte pairs, whitespace-separated) is already $readmemh format. Also clears the
-  // register file and data memory, so a check against vea_sim's output (which always
-  // starts both at zero) is comparing like with like even when this is not the first
-  // program run this sim - a fixed data address one program uses is not guaranteed to
-  // be one only it touches.
+  // Same as load_program, but for one file. `vea_sim asm`'s plain stdout output (hex
+  // byte pairs, separated by spaces) is already $readmemh format.
+  // This task also clears the register file and the data memory. vea_sim's own run
+  // always starts both at zero. A later program in this same simulation can reuse a
+  // data address from an earlier one, so the clear keeps each check fair.
   task automatic load_program_file(input string path);
     clear_regfile();
     dmem.clear();
@@ -147,19 +157,20 @@ module tb_core #(
       tick();
       n++;
     end
-    // halt latches the cycle the halt instruction enters Decode's stage-2 register (see
-    // decode.sv), which can land on the same edge that also captures writeback's copy of
-    // whatever instruction was right in front of it. The register file itself needs one
-    // more clock edge beyond that (writeback.sv registers wb_valid before it ever reaches
-    // regfile.sv's own write). A fast, no-memory tail hides this: fetch's own latency
-    // already has the next frame sitting in Decode by the time the last op completes, so
-    // halt does not latch until later anyway. A load as the very last instruction has no
-    // such slack, so without this extra tick its write is still in flight when the loop
-    // above exits. One idle tick costs nothing once halted, so it always runs.
+    // halt latches on the same clock edge that decode's stage-2 register loads the halt
+    // instruction (see decode.sv). That can be the same edge that also latches
+    // writeback's copy of the instruction right in front of halt.
+    // The register file needs one more clock edge after that. writeback.sv registers
+    // wb_valid first. regfile.sv only commits the write on the edge after.
+    // Most programs do not show this gap: fetch is slow, so the halt instruction is
+    // often not even ready to latch until later anyway.
+    // A load as the very last instruction before halt has no such gap. Its write is
+    // still in flight when the loop above exits. This extra tick lets that write land
+    // first. It costs nothing once halted, so it always runs.
     if (halt) tick();
-    // A fault (see execute.sv's `stopped`) parks the core for good, short of its own
-    // halt; that reads identically to a slow program unless the err_ bits are called
-    // out here, so a run that never reaches halt still says why in one line.
+    // A fault (see execute.sv's `stopped`) stops the core for good. It never reaches
+    // its own halt. Without this line, that would look the same as a slow program. This
+    // line shows the err_ bits, so a run that never halts still says why.
     if (!halt && (err_illegal || err_unsupported || err_trap || err_unaligned))
       $display("tb_core: %s: stalled on a fault (illegal=%0d unsupported=%0d trap=%0d unaligned=%0d)",
                 name, err_illegal, err_unsupported, err_trap, err_unaligned);
@@ -167,11 +178,11 @@ module tb_core #(
     if (halt) $display("tb_core: %s halted after %0d cycles", name, n);
   endtask
 
-  // Checks every register against a $readmemh-format expectation file: 32 lines, r0
-  // first, the same format `vea_sim conform` prints. That subcommand is the golden
-  // oracle: it runs the same program on the onestep simulator to halt and dumps its
-  // final regs, so this is a direct RTL-vs-simulator cross-check, not a hand-copied
-  // expected value.
+  // Checks every register against a $readmemh-format file. The file holds 32 lines: r0
+  // first, then r1, and so on. `vea_sim conform` prints this same format.
+  // `vea_sim conform` is the golden oracle. It runs the same program on the onestep
+  // simulator to halt, then dumps the final registers. This check compares the RTL
+  // directly against the simulator, with no expected value copied by hand.
   task automatic check_regs_file(input string name, input string path);
     logic [63:0] expected [32];
     $readmemh(path, expected);
@@ -307,10 +318,11 @@ module tb_core #(
   string ext_prog, ext_expect;
   bit    have_ext_prog, have_ext_expect;
 
-  // +conform_dir=<dir> runs the whole vea_sim/tests/*.s corpus: every program named in
-  // <dir>/manifest.txt (one name per line, blank lines skipped), loading <dir>/<name>.hex
-  // and checking the halted register file against <dir>/<name>.expect. See
-  // core/Makefile's `conform` target for how the directory is built.
+  // +conform_dir=<dir> runs the full vea_sim/tests/*.s corpus.
+  // <dir>/manifest.txt names every program, one name per line. Blank lines are skipped.
+  // For each name, this loads <dir>/<name>.hex, runs it to halt, then checks the
+  // register file against <dir>/<name>.expect.
+  // See core/Makefile's `conform` target for how this directory is built.
   task automatic run_conform_one(input string dir, input string name);
     string hex_path, expect_path;
     hex_path    = {dir, "/", name, ".hex"};
@@ -318,13 +330,13 @@ module tb_core #(
     $display("tb_core: conform %s", name);
     load_program_file(hex_path);
     run_until_halt(name, 400_000);
-    // A run that never halted has no final state worth checking; run_until_halt
-    // already recorded the one failure that matters (and, on a fault, why).
+    // Skip the register check if the run never halted. There is no final state to
+    // check. run_until_halt already recorded the failure, and why, if there was a fault.
     if (halt) check_regs_file(name, expect_path);
   endtask
 
-  // Strips $fgets's trailing newline (and a stray \r, in case the manifest was
-  // written on a different platform).
+  // Removes the trailing newline that $fgets leaves on each line. Also removes a
+  // stray \r, in case the manifest file came from a different platform.
   function automatic string chomp(input string s);
     int n;
     n = s.len();
@@ -347,10 +359,20 @@ module tb_core #(
   string conform_dir;
   bit    have_conform;
 
+  // +trace=<path> turns on a waveform dump for this run. See `make waves`.
+  string trace_path;
+  bit    have_trace;
+
   initial begin
     have_ext_prog    = $value$plusargs("prog=%s", ext_prog);
     have_ext_expect  = $value$plusargs("expect=%s", ext_expect);
     have_conform     = $value$plusargs("conform_dir=%s", conform_dir);
+    have_trace       = $value$plusargs("trace=%s", trace_path);
+
+    if (have_trace) begin
+      $dumpfile(trace_path);
+      $dumpvars(0, tb_core);
+    end
 
     if (have_conform) begin
       $display("tb_core: running conformance suite from %s", conform_dir);

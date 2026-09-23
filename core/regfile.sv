@@ -3,8 +3,11 @@
 //! The read ports have no clock, because Decode needs the value in the same cycle it
 //! picks the register.
 //!
-//! No same-cycle write bypass. Only one instruction is ever in flight, so a read always
-//! lands a cycle after the write it needs.
+//! The write port bypasses straight to both read ports (see rdata_a and rdata_b below).
+//! The next instruction can need a load's or an idx_store's result the same cycle it
+//! commits here. A load, or a store's extra value read, makes Execute wait several
+//! cycles. Fetch uses that time to stage the next instruction, so that instruction has
+//! nothing left to wait for once the wait ends.
 
 module vea_regfile (
   input  logic clk,
@@ -37,7 +40,12 @@ module vea_regfile (
     if (wr_en) regs[wr_addr] <= wr_data;
   end
 
-  assign rdata_a = regs[raddr_a];
-  assign rdata_b = regs[raddr_b];
+  // Write-first bypass. A write and a read of the same register can happen in the same
+  // cycle. Decode does not always avoid this case.
+  // A load, or an idx_store's extra value read (see decode.sv), can need a result the
+  // same cycle that result commits here. Without this mux, that read would get the old
+  // value from regs[]. That value is one cycle stale.
+  assign rdata_a = (wr_en && wr_addr == raddr_a) ? wr_data : regs[raddr_a];
+  assign rdata_b = (wr_en && wr_addr == raddr_b) ? wr_data : regs[raddr_b];
 
 endmodule
