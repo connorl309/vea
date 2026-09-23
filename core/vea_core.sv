@@ -65,6 +65,7 @@ module vea_core #(
   logic        ex_is_load, ex_is_store;
   logic [1:0]  ex_mem_size;
   logic        ex_mem_sext, ex_is_trap, ex_is_halt, ex_illegal;
+  logic        ex_fwd_a, ex_fwd_b, ex_fwd_c;
 
   // ---- Execute <-> Writeback --------------------------------------------------------------
 
@@ -125,6 +126,8 @@ module vea_core #(
     .rf_raddr_b     (rf_raddr_b),
     .rf_rdata_a     (rf_rdata_a),
     .rf_rdata_b     (rf_rdata_b),
+    .wb_valid       (wb_valid),
+    .wb_rd          (wb_rd),
     .ex_valid       (ex_valid),
     .ex_ready       (ex_ready),
     .ex_pc          (ex_pc),
@@ -132,6 +135,9 @@ module vea_core #(
     .ex_a           (ex_a),
     .ex_b           (ex_b),
     .ex_c           (ex_c),
+    .ex_fwd_a       (ex_fwd_a),
+    .ex_fwd_b       (ex_fwd_b),
+    .ex_fwd_c       (ex_fwd_c),
     .ex_rd          (ex_rd),
     .ex_wr_en       (ex_wr_en),
     .ex_is_branch   (ex_is_branch),
@@ -154,6 +160,9 @@ module vea_core #(
     .ex_a              (ex_a),
     .ex_b              (ex_b),
     .ex_c              (ex_c),
+    .ex_fwd_a          (ex_fwd_a),
+    .ex_fwd_b          (ex_fwd_b),
+    .ex_fwd_c          (ex_fwd_c),
     .ex_rd             (ex_rd),
     .ex_wr_en          (ex_wr_en),
     .ex_is_branch      (ex_is_branch),
@@ -166,6 +175,8 @@ module vea_core #(
     .ex_is_halt        (ex_is_halt),
     .ex_illegal        (ex_illegal),
     .ex_ready          (ex_ready),
+    .fwd_data          (rf_wr_data),
+    .redirect_valid    (redirect_valid),
     .wb_valid          (wb_valid),
     .wb_rd             (wb_rd),
     .wb_data           (wb_data),

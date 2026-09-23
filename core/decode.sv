@@ -17,8 +17,10 @@
 //! The stage register holds register numbers, not register values. A held register
 //! value goes stale when the instruction waits behind a stall.
 //!
-//! The register file must return the newest value of a register, also when the result
-//! is not written back yet. Decode does not stall on a register hazard.
+//! Decode does not stall on a register hazard. The register file bypass gives a result
+//! that Writeback writes in this cycle. The ex_fwd_ outputs cover a result that Execute
+//! completes in this cycle. That result is not in the register file in time. Execute
+//! gets it from Writeback one cycle later.
 //!
 //! When ex_illegal is high, the other ex_ outputs are undefined, except ex_pc. This lets
 //! the opcode decode ignore the opcodes that are not defined.
@@ -50,6 +52,10 @@ module vea_decode #(
   input  logic [63:0] rf_rdata_a,
   input  logic [63:0] rf_rdata_b,
 
+  //! The register write that Execute completes in this cycle.
+  input  logic        wb_valid,
+  input  logic [4:0]  wb_rd,
+
   output logic        ex_valid,
   input  logic        ex_ready,
   //! The address of this instruction. It is valid also when ex_illegal is high, because
@@ -62,6 +68,11 @@ module vea_decode #(
   output logic [63:0] ex_b,
   //! The value that a store writes. The ALU does not use it.
   output logic [63:0] ex_c,
+  //! High when the operand is the result that Execute completes in this cycle. The
+  //! value on ex_a, ex_b or ex_c is then stale.
+  output logic        ex_fwd_a,
+  output logic        ex_fwd_b,
+  output logic        ex_fwd_c,
   output logic [4:0]  ex_rd,
   output logic        ex_wr_en,
   //! High for b and for jmp. A jmp has the predicate 0 (always), so Execute needs no
@@ -348,16 +359,16 @@ module vea_decode #(
 
   logic        s2_valid, value_done;
   logic [63:0] store_value;
+  logic        store_fwd;
   logic        need_value, read_value, can_issue, s2_load;
 
   // The register file has two read ports, so a store with an index register reads its
   // value in a cycle of its own.
   assign need_value = s2_valid & s2.idx_store & ~value_done;
-  // Stage 2 reads the value the same cycle Execute frees up. That can be the same cycle
-  // the value's source instruction (often a load) commits it. Execute's own multi-cycle
-  // wait already staged this instruction with nothing else to do.
-  // This is safe only because vea_regfile bypasses its write port straight to both read
-  // ports.
+  // Stage 2 reads the value when Execute frees up. Execute then has no older
+  // instruction that can still write the value register. An instruction that completes
+  // in this cycle sets store_fwd. The ID/EX register stays empty until the store
+  // issues, so Writeback keeps that result until the store uses it.
   assign read_value = need_value & ex_ready;
   assign can_issue  = s2_valid & ~need_value;
 
@@ -388,7 +399,10 @@ module vea_decode #(
       value_done <= 1'b1;
     end
 
-    if (read_value) store_value <= rf_rdata_a;
+    if (read_value) begin
+      store_value <= rf_rdata_a;
+      store_fwd   <= wb_valid & (wb_rd == s2.rd);
+    end
   end
 
   // ---- Stage 2: register read --------------------------------------------------------
@@ -421,6 +435,23 @@ module vea_decode #(
   // path. A store with a displacement has the value on port B, because B has no other
   // use in that form. The other instructions do not use this output.
   assign ex_c = s2.idx_store ? store_value : rf_rdata_b;
+
+  // ---- Stage 2: forward selects ------------------------------------------------------
+
+  // An immediate, the PC or a zero must not change to the forwarded result. Only an
+  // operand from a register port can set its select. These cases match the operand
+  // muxes above.
+  logic a_from_reg, b_from_reg;
+
+  assign a_from_reg = ~(s2.imm_form & (s2.src_in_a | s2.is_b));
+  assign b_from_reg = ~s2.imm_form & ~s2.src_in_a & ~s2.is_b;
+
+  // The compare uses the register numbers in s2, not rf_raddr_a. The instruction issues
+  // only when need_value is low, so the two are the same.
+  assign ex_fwd_a = wb_valid & (wb_rd == s2.raddr_a) & a_from_reg;
+  assign ex_fwd_b = wb_valid & (wb_rd == s2.raddr_b) & b_from_reg;
+  // Only a store reads ex_c, and ex_c of a store always comes from a register.
+  assign ex_fwd_c = s2.idx_store ? store_fwd : wb_valid & (wb_rd == s2.raddr_b);
 
   // ---- Stage 2: outputs --------------------------------------------------------------
 

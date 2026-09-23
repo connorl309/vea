@@ -56,8 +56,10 @@ jobs:
           exit "$status"
 
   rtl:
-    # Pinned, not ubuntu-latest: the testbenches need Verilator 5 (--binary
-    # --timing). Ubuntu 24.04 packages 5.020. Older releases package 4.x.
+    # Pinned, not ubuntu-latest: setup.sh targets a Debian/Ubuntu apt layout.
+    # The testbenches need Verilator 5 (--binary --timing) built newer than
+    # Ubuntu 24.04's own apt package. setup.sh builds a known-good toolchain
+    # from source instead of relying on the distro package.
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -68,11 +70,26 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: vea_sim
-      - name: Install Verilator
+      # setup.sh tracks upstream master/main, with no version pin, so a cache
+      # keyed on the script's own content is correct: the same script always
+      # means the same build, and an edit to the script is the only event
+      # that should trigger a fresh one.
+      - name: Cache FPGA toolchain
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.fpga-toolchain
+          key: fpga-toolchain-${{ runner.os }}-${{ hashFiles('setup.sh') }}
+      # setup.sh only builds a tool that command -v cannot already find. This
+      # step must put a cache hit on PATH before setup.sh runs, or it will not
+      # see the cached tools and will rebuild them anyway.
+      - name: Add FPGA toolchain to PATH
         run: |
-          sudo apt-get update
-          sudo apt-get install -y verilator
-          verilator --version
+          echo "${{ github.workspace }}/.fpga-toolchain/bin" >> "$GITHUB_PATH"
+          echo "LD_LIBRARY_PATH=${{ github.workspace }}/.fpga-toolchain/lib:${LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+      - name: Build FPGA toolchain
+        env:
+          PREFIX: ${{ github.workspace }}/.fpga-toolchain
+        run: bash "${{ github.workspace }}/setup.sh"
       - name: RTL testbenches
         run: |
           set -o pipefail
@@ -90,3 +107,68 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           exit "$status"
+
+  pnr:
+    # Runs after rtl: place-and-route is slow, and there is no reason to pay
+    # for it when the testbenches already caught a failure.
+    needs: rtl
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@v4
+      # Same cache key as the rtl job's toolchain, so this job reads what that
+      # job already built instead of building it again.
+      - name: Cache FPGA toolchain
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.fpga-toolchain
+          key: fpga-toolchain-${{ runner.os }}-${{ hashFiles('setup.sh') }}
+      - name: Add FPGA toolchain to PATH
+        run: |
+          echo "${{ github.workspace }}/.fpga-toolchain/bin" >> "$GITHUB_PATH"
+          echo "LD_LIBRARY_PATH=${{ github.workspace }}/.fpga-toolchain/lib:${LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+      - name: Build FPGA toolchain
+        env:
+          PREFIX: ${{ github.workspace }}/.fpga-toolchain
+        run: bash "${{ github.workspace }}/setup.sh"
+      - name: Place and route, check Fmax
+        run: |
+          set -uo pipefail
+
+          FMAX_FLOOR_MHZ=50
+
+          make pnr
+          rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "make pnr failed (exit $rc)"
+            exit "$rc"
+          fi
+
+          # nextpnr prints an early, pre-route placement estimate, then the
+          # real, routed number once routing finishes. The routed number is
+          # the one that matters, and it is the last one in the log. Each such
+          # line also names the constraint target in MHz in a trailing
+          # parenthesis, so the match must anchor on the line and the colon
+          # before it, not just any number next to "MHz".
+          fmax=$(grep -E "^Info: Max frequency for clock" build/pnr.log | tail -1 \
+            | sed -E "s/^Info: Max frequency for clock '[^']*': ([0-9]+\.[0-9]+) MHz.*/\1/")
+          if ! [[ "$fmax" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            echo "No Max frequency line found in build/pnr.log, or its format changed"
+            exit 1
+          fi
+
+          {
+            echo '### Place and route'
+            echo '```text'
+            grep -E '^Info: Max (frequency|delay)' build/pnr.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if awk -v f="$fmax" -v floor="$FMAX_FLOOR_MHZ" 'BEGIN { exit !(f >= floor) }'; then
+            echo "Fmax ${fmax} MHz meets the ${FMAX_FLOOR_MHZ} MHz floor"
+          else
+            echo "Fmax ${fmax} MHz is below the ${FMAX_FLOOR_MHZ} MHz floor"
+            exit 1
+          fi

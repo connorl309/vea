@@ -150,24 +150,22 @@ module tb_core #(
     for (int i = 0; i < 32; i++) $display("tb_core: r%0d = %h", i, reg_val(i));
   endtask
 
+  // halt latches when Decode takes the halt. Older instructions can still be in the
+  // ID/EX register at that time. A load there can wait many cycles for the memory.
+  // The register file is final only when Execute is empty and Writeback has no write.
+  // A halt on the wrong path of a branch also latches, for a short time. The branch is
+  // then still in Execute, so this check does not stop on it.
+  function automatic bit drained();
+    drained = halt && !dut.u_execute.x_valid && !dut.rf_wr_en;
+  endfunction
+
   task automatic run_until_halt(input string name, input int max_cycles);
     int n;
     n = 0;
-    while (!halt && n < max_cycles) begin
+    while (!drained() && n < max_cycles) begin
       tick();
       n++;
     end
-    // halt latches on the same clock edge that decode's stage-2 register loads the halt
-    // instruction (see decode.sv). That can be the same edge that also latches
-    // writeback's copy of the instruction right in front of halt.
-    // The register file needs one more clock edge after that. writeback.sv registers
-    // wb_valid first. regfile.sv only commits the write on the edge after.
-    // Most programs do not show this gap: fetch is slow, so the halt instruction is
-    // often not even ready to latch until later anyway.
-    // A load as the very last instruction before halt has no such gap. Its write is
-    // still in flight when the loop above exits. This extra tick lets that write land
-    // first. It costs nothing once halted, so it always runs.
-    if (halt) tick();
     // A fault (see execute.sv's `stopped`) stops the core for good. It never reaches
     // its own halt. Without this line, that would look the same as a slow program. This
     // line shows the err_ bits, so a run that never halts still says why.

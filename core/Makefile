@@ -187,8 +187,9 @@ pnr:
 	@$(YOSYS) -q -p "read_verilog $(YOSYS_READ_FLAGS) $(PKG_FILES:%=%.sv) $(RTL_FILES:%=%.sv) vea_core.sv; \
 	  synth_ecp5 $(YOSYS_SYNTH_FLAGS) -top vea_core -json build/vea_core.json"
 	@echo "== nextpnr-ecp5 vea_core.sv ($(ECP5_DEVICE))"
-	@$(NEXTPNR_ECP5) --json build/vea_core.json --$(ECP5_DEVICE) --no-print-critical-path-source \
-	    > build/pnr.log 2>&1; rc=$$?; \
+	@$(NEXTPNR_ECP5) --test
+	@$(NEXTPNR_ECP5) --package CABGA381 --json build/vea_core.json --$(ECP5_DEVICE) --parallel-refine \
+		--tmg-ripup --speed 6 > build/pnr.log 2>&1; rc=$$?; \
 	  awk '/^Info: Device utilisation:/ {p=1} p {sub(/^Info: ?/, ""); print} p && /^$$/ {p=0}' build/pnr.log; \
 	  echo; \
 	  awk '/Critical path report for clock .* \(posedge -> posedge\):/ {p=1} \

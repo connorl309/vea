@@ -39,7 +39,9 @@ module vea_writeback (
   end
 
   // These registers have no reset. rf_wr_en and redirect_valid gate their own values,
-  // so a stale address, write value or target here never reaches anything.
+  // so a stale address or target here never reaches anything.
+  // rf_wr_data must change only on a write. Execute forwards from it after rf_wr_en
+  // goes low. An enable-free register here gives a wrong operand to Execute.
   always_ff @(posedge clk) begin
     if (wb_valid) begin
       rf_wr_addr <= wb_rd;

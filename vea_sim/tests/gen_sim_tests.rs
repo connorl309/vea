@@ -130,6 +130,15 @@ fn branch_predicates() {
 }
 
 #[test]
+fn branch_squash() {
+    check(Prog {
+        source: src!("branch_squash.s"),
+        final_regs: (15, &[(9, 1)]),
+        ..Default::default()
+    });
+}
+
+#[test]
 fn bubble_sort() {
     check(Prog {
         source: src!("bubble_sort.s"),
@@ -335,6 +344,7 @@ fn sum_of_squares() {
 const SOURCES: &[(&str, &str)] = &[
     ("bitops.s", "b70a921badffd68ddcb5808a6d48c3e0"),
     ("branch_predicates.s", "c2cefa6da51956309d435fb6f221707e"),
+    ("branch_squash.s", "1ed14ff53a7adf4591d0108b11d55c94"),
     ("bubble_sort.s", "43a49dd0834250fda90a4186090246db"),
     ("factorial.s", "03c075b80b964bfeb153b196c6f07884"),
     ("fibonacci.s", "26805cb895f427c5702d635b452b3adf"),

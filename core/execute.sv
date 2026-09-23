@@ -8,6 +8,14 @@
 //!
 //! See tb/tb_execute.sv for the testbench.
 //!
+//! Execute holds the ID/EX register. The register file read and the ALU are then in
+//! different cycles. A path through both sets the clock speed of the core.
+//!
+//! An instruction enters the ID/EX register only when the instruction before it
+//! completes. That result is not in the register file yet. It is in Writeback. Decode
+//! finds this case and sets ex_fwd_a, ex_fwd_b or ex_fwd_c. Execute then uses fwd_data
+//! for that operand. Older results come through the register file bypass.
+//!
 //! An illegal instruction, an unsupported op, a trap or a misaligned branch target all
 //! stop the core for good: no write, no redirect, and no later instruction is ever
 //! accepted again, since there is nowhere defined yet for any of them to continue to.
@@ -19,6 +27,7 @@ module vea_execute (
 
   //! Decode drives these. ex_illegal means every other ex_ input except ex_pc is
   //! undefined, so Execute must fault on it before it reads them.
+  //! Decode must hold ex_valid low while redirect_valid is high.
   input  logic         ex_valid,
   // No fault target exists yet, so no trap or illegal reads the faulting address.
   /* verilator lint_off UNUSEDSIGNAL */
@@ -28,6 +37,10 @@ module vea_execute (
   input  logic [63:0]  ex_a,
   input  logic [63:0]  ex_b,
   input  logic [63:0]  ex_c,
+  //! High when the operand must come from fwd_data, not from ex_a, ex_b or ex_c.
+  input  logic         ex_fwd_a,
+  input  logic         ex_fwd_b,
+  input  logic         ex_fwd_c,
   input  logic [4:0]   ex_rd,
   input  logic         ex_wr_en,
   input  logic         ex_is_branch,
@@ -42,7 +55,15 @@ module vea_execute (
   input  logic         ex_is_halt,
   /* verilator lint_on UNUSEDSIGNAL */
   input  logic         ex_illegal,
+  //! High when the ID/EX register takes ex_valid and the ex_ inputs at the clock edge.
   output logic         ex_ready,
+
+  //! The last register write from vea_writeback. It must keep its value until the next
+  //! write. A forwarded operand reads it for as long as the instruction waits here.
+  input  logic [63:0]  fwd_data,
+  //! The redirect from vea_writeback. The instruction in the ID/EX register is then on
+  //! the wrong path. It entered as the branch completed.
+  input  logic         redirect_valid,
 
   //! The resolved write-back and redirect, one cycle before they reach the register
   //! file and Fetch/Decode. vea_writeback holds both output ports.
@@ -67,6 +88,54 @@ module vea_execute (
   input  logic               mem_rvalid,
   input  logic [63:0]        mem_rdata
 );
+  // ---- ID/EX register ----------------------------------------------------------------
+
+  logic        x_valid;
+  logic [3:0]  x_alu_op;
+  logic [63:0] x_a, x_b, x_c;
+  logic        x_fwd_a, x_fwd_b, x_fwd_c;
+  logic [4:0]  x_rd;
+  logic        x_wr_en, x_is_branch;
+  logic [2:0]  x_pred;
+  logic        x_is_load, x_is_store;
+  logic [1:0]  x_mem_size;
+  logic        x_mem_sext, x_is_trap, x_illegal;
+
+  always_ff @(posedge clk) begin
+    if (!rst_n || redirect_valid) x_valid <= 1'b0;
+    else if (ex_ready)            x_valid <= ex_valid;
+  end
+
+  // No reset here. x_valid has a reset, and x_valid gates these fields.
+  always_ff @(posedge clk) begin
+    if (ex_ready) begin
+      x_alu_op    <= ex_alu_op;
+      x_a         <= ex_a;
+      x_b         <= ex_b;
+      x_c         <= ex_c;
+      x_fwd_a     <= ex_fwd_a;
+      x_fwd_b     <= ex_fwd_b;
+      x_fwd_c     <= ex_fwd_c;
+      x_rd        <= ex_rd;
+      x_wr_en     <= ex_wr_en;
+      x_is_branch <= ex_is_branch;
+      x_pred      <= ex_pred;
+      x_is_load   <= ex_is_load;
+      x_is_store  <= ex_is_store;
+      x_mem_size  <= ex_mem_size;
+      x_mem_sext  <= ex_mem_sext;
+      x_is_trap   <= ex_is_trap;
+      x_illegal   <= ex_illegal;
+    end
+  end
+
+  // Decode sets the selects one cycle early. Only this mux is in front of the ALU.
+  logic [63:0] op_a, op_b, op_c;
+
+  assign op_a = x_fwd_a ? fwd_data : x_a;
+  assign op_b = x_fwd_b ? fwd_data : x_b;
+  assign op_c = x_fwd_c ? fwd_data : x_c;
+
   // ---- ALU -----------------------------------------------------------------------
 
   logic [63:0] alu_result;
@@ -75,9 +144,9 @@ module vea_execute (
   logic        alu_unsupported;
 
   vea_alu u_alu (
-    .a           (ex_a),
-    .b           (ex_b),
-    .op          (ex_alu_op),
+    .a           (op_a),
+    .b           (op_b),
+    .op          (x_alu_op),
     .result      (alu_result),
     .flags       (alu_flags),
     .flags_valid (alu_flags_valid),
@@ -85,19 +154,23 @@ module vea_execute (
   );
 
   //! Any fault stops the core for good, so this also gates out whatever instruction is
-  //! stuck behind it: without this, a legal instruction that Decode already handed to
-  //! Execute the same cycle the fault latched would keep re-completing forever, since
-  //! ex_ready alone (below) only blocks the *next* one from being accepted.
+  //! stuck behind it: without this, a legal instruction that entered the ID/EX register
+  //! the same cycle the fault latched would complete, since ex_ready alone (below) only
+  //! blocks the *next* one from being accepted.
   logic stopped;
 
   assign stopped = err_illegal | err_unsupported | err_trap | err_unaligned;
 
-  //! High for a legal, present instruction, and only once the core has not stopped.
-  //! Everything below reads this instead of ex_valid, since ex_illegal makes the other
-  //! ex_ fields undefined.
+  //! High for an instruction that may complete. Everything below reads this, not
+  //! x_valid. An instruction on the wrong path must not change state.
+  logic live;
+
+  assign live = x_valid && !redirect_valid && !stopped;
+
+  //! High for a legal, live instruction. ex_illegal makes the other fields undefined.
   logic valid_op;
 
-  assign valid_op = ex_valid && !ex_illegal && !stopped;
+  assign valid_op = live && !x_illegal;
 
   // ---- Condition codes -------------------------------------------------------------
 
@@ -130,7 +203,7 @@ module vea_execute (
   assign cc_lt   = cc[2] ^ cc[0];
 
   always_comb begin
-    unique case (ex_pred)
+    unique case (x_pred)
       PRED_ALWAYS: branch_taken = 1'b1;
       PRED_EQ:     branch_taken = cc_zero;
       PRED_NE:     branch_taken = ~cc_zero;
@@ -152,14 +225,14 @@ module vea_execute (
   logic        is_mul, mul_start, mul_valid;
   logic [63:0] mul_result;
 
-  assign is_mul = ex_alu_op == ALU_MUL;
+  assign is_mul = x_alu_op == ALU_MUL;
 
   vea_mul u_mul (
     .clk    (clk),
     .rst_n  (rst_n),
     .start  (mul_start),
-    .a      (ex_a),
-    .b      (ex_b),
+    .a      (op_a),
+    .b      (op_b),
     .valid  (mul_valid),
     .result (mul_result)
   );
@@ -167,14 +240,14 @@ module vea_execute (
   // ---- Memory and multiply wait --------------------------------------------------------
 
   //! A load or a store takes two+ cycles: request, then reply. MUL takes several cycles
-  //! too, in vea_mul. Both hold Execute the same way. Fetch stages the next instruction
+  //! too, in vea_mul. Both hold Execute the same way. Decode stages the next instruction
   //! while either one runs.
   typedef enum logic [1:0] { S_IDLE, S_MEM_WAIT, S_MUL_WAIT } wait_state_t;
 
   wait_state_t state, next_state;
   logic        mem_op, mem_req_taken, mul_op;
 
-  assign mem_op        = valid_op && (ex_is_load || ex_is_store);
+  assign mem_op        = valid_op && (x_is_load || x_is_store);
   assign mem_req_taken = mem_req_valid && mem_req_ready;
   assign mul_op        = valid_op && is_mul;
 
@@ -198,7 +271,7 @@ module vea_execute (
   assign mem_req_valid = (state == S_IDLE) && mem_op;
   assign mul_start      = (state == S_IDLE) && mul_op;
   // A plain concatenation, field order MSB first as in vea_pkg::mem_req_t
-  assign mem_req        = {alu_result, ex_is_store, ex_mem_size, ex_c};
+  assign mem_req        = {alu_result, x_is_store, x_mem_size, op_c};
 
   // Matches the opinfo size field (LS_SIZE_D/B/H/W). A narrow load sits low in
   // mem_rdata; the rest is sign- or zero-extended.
@@ -210,13 +283,13 @@ module vea_execute (
   logic [63:0] load_value;
 
   always_comb begin
-    unique case (ex_mem_size)
-      SIZE_B:  load_value = ex_mem_sext ? {{56{mem_rdata[7]}},  mem_rdata[7:0]}
-                                         : {56'b0, mem_rdata[7:0]};
-      SIZE_H:  load_value = ex_mem_sext ? {{48{mem_rdata[15]}}, mem_rdata[15:0]}
-                                         : {48'b0, mem_rdata[15:0]};
-      SIZE_W:  load_value = ex_mem_sext ? {{32{mem_rdata[31]}}, mem_rdata[31:0]}
-                                         : {32'b0, mem_rdata[31:0]};
+    unique case (x_mem_size)
+      SIZE_B:  load_value = x_mem_sext ? {{56{mem_rdata[7]}},  mem_rdata[7:0]}
+                                        : {56'b0, mem_rdata[7:0]};
+      SIZE_H:  load_value = x_mem_sext ? {{48{mem_rdata[15]}}, mem_rdata[15:0]}
+                                        : {48'b0, mem_rdata[15:0]};
+      SIZE_W:  load_value = x_mem_sext ? {{32{mem_rdata[31]}}, mem_rdata[31:0]}
+                                        : {32'b0, mem_rdata[31:0]};
       SIZE_D:  load_value = mem_rdata;
     endcase
   end
@@ -240,26 +313,26 @@ module vea_execute (
   //! another frame. No separate stop wire to Fetch or Decode is needed. The err_ bits
   //! are registered, so the faulting instruction itself still completes this cycle;
   //! only the next one is refused.
-  assign ex_ready = completing && !stopped;
+  assign ex_ready = (!x_valid || completing) && !stopped;
 
   //! B and JMP form a target from a register or an immediate, either of which can land
   //! off a 4-byte boundary. Fetch only ever sees the aligned bits (redirect_pc is
   //! [63:2]), so a misaligned target must fault here, before the low bits are dropped.
   logic pc_misaligned;
 
-  assign pc_misaligned     = valid_op && ex_is_branch && branch_taken && |alu_result[1:0];
-  assign wb_redirect_valid = completing && valid_op && ex_is_branch && branch_taken
+  assign pc_misaligned     = valid_op && x_is_branch && branch_taken && |alu_result[1:0];
+  assign wb_redirect_valid = completing && valid_op && x_is_branch && branch_taken
                             && !pc_misaligned;
   assign wb_redirect_pc    = alu_result[63:2];
 
   // DIV decodes as legal, but vea_alu has no silicon for it. It raises alu_unsupported
   // instead. That must not reach the register file.
   // MUL decodes as legal too. Its result comes from vea_mul, not vea_alu.
-  assign wb_valid = completing && valid_op && ex_wr_en && !alu_unsupported;
-  assign wb_rd    = ex_rd;
-  assign wb_data  = ex_is_load ? load_value
-                   : is_mul    ? mul_result
-                   :             alu_result;
+  assign wb_valid = completing && valid_op && x_wr_en && !alu_unsupported;
+  assign wb_rd    = x_rd;
+  assign wb_data  = x_is_load ? load_value
+                   : is_mul   ? mul_result
+                   :            alu_result;
 
   // ---- Status indicators ---------------------------------------------
 
@@ -270,9 +343,9 @@ module vea_execute (
       err_trap        <= 1'b0;
       err_unaligned   <= 1'b0;
     end else begin
-      if (completing && ex_valid && ex_illegal)      err_illegal     <= 1'b1;
+      if (completing && live && x_illegal)           err_illegal     <= 1'b1;
       if (completing && valid_op && alu_unsupported) err_unsupported <= 1'b1;
-      if (completing && valid_op && ex_is_trap)      err_trap        <= 1'b1;
+      if (completing && valid_op && x_is_trap)       err_trap        <= 1'b1;
       if (completing && pc_misaligned)                err_unaligned   <= 1'b1;
     end
   end
