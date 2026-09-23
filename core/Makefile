@@ -1,6 +1,7 @@
 # Runs the Verilator testbenches and the Yosys synthesis / nextpnr-ecp5 place-and-route
 # reports for ECP5 FPGAs.
 # Usage: make [all|fetch|decode|execute|writeback|regfile|mem_if|core|conform|run|waves|synth|pnr|clean]
+# pnr takes USE_LPF, PNR_FREQ, PNR_LIVE and PNR_ARGS. See below.
 
 VERILATOR   ?= verilator
 YOSYS       ?= yosys
@@ -26,8 +27,40 @@ YOSYS_READ_FLAGS  := -sv -noautowire
 # Other values: um5g-85k, 85k, 25k, etc. Override with make pnr ECP5_DEVICE=um5g-85k
 ECP5_DEVICE ?= 45k
 
+# What make pnr places and routes.
+# Empty (the default): vea_pnr_top. It keeps only the clock and the SPI pins, so the pin
+# routes stay short. Use it to measure the core.
+# A file name: the real vea_core, with every port. That LPF file maps the ports to pins.
+# Usage: make pnr USE_LPF=board.lpf
+USE_LPF ?=
+PNR_TOP  := $(if $(USE_LPF),vea_core,vea_pnr_top)
+PNR_JSON := build/$(PNR_TOP).json
+
+# Target frequency of place and route, in MHz. Empty keeps the nextpnr default of 12 MHz.
+# A target makes the placer and router timing-driven. This is much slower: minutes, not
+# seconds. A missed target does not fail the run. The log shows the Fmax that it reached.
+# Usage: make pnr PNR_FREQ=100
+PNR_FREQ ?=
+
+# Set to 1 to print the nextpnr log to the terminal while it runs. The file
+# build/pnr.log is written in both cases.
+# Usage: make pnr PNR_LIVE=1
+PNR_LIVE ?=
+
+# More nextpnr-ecp5 flags. See `nextpnr-ecp5 --help`. For example --verbose, --debug-placer,
+# --debug-router or --seed 3.
+# Usage: make pnr PNR_ARGS="--seed 3"
+PNR_ARGS ?=
+
+PNR_FLAGS := --package CABGA381 --json $(PNR_JSON) --$(ECP5_DEVICE) \
+  --parallel-refine --tmg-ripup --speed 6 \
+  $(if $(USE_LPF),--lpf $(USE_LPF)) --lpf-allow-unconstrained \
+  --placed-svg ./build/placement.svg --routed-svg ./build/routing.svg \
+  $(if $(PNR_FREQ),--freq $(PNR_FREQ) --timing-allow-fail) $(PNR_ARGS)
+
 # With -flatten, Yosys can optimize across module borders, supposedly.
-YOSYS_SYNTH_FLAGS := -flatten -noiopad
+#											|		  |			|
+YOSYS_SYNTH_FLAGS := -flatten -noiopad -widelut
 
 # The tests do not lint the units. Lint is a separate step.
 VFLAGS := --binary --timing --timescale 1ns/1ps -Wno-fatal -Wno-lint -Wno-style -Wno-TIMESCALEMOD -j
@@ -49,6 +82,10 @@ alu:
 	  $(VERILATOR) $(VFLAGS)  --top-module tb_alu --Mdir build/alu \
 	    alu.sv $(TB)/tb_alu.sv > /dev/null \
 	  && ./build/alu/Vtb_alu || rc=1; \
+	echo "== adder"; \
+	  $(VERILATOR) $(VFLAGS)  --top-module tb_adder --Mdir build/adder \
+	    alu.sv $(TB)/tb_adder.sv > /dev/null \
+	  && ./build/adder/Vtb_adder || rc=1; \
 	echo "== mul"; \
 	  $(VERILATOR) $(VFLAGS)  --top-module tb_mul --Mdir build/mul \
 	    mul.sv $(TB)/tb_mul.sv > /dev/null \
@@ -173,23 +210,26 @@ synth:
 	    tee -o /dev/stdout stat" \
 	  || exit 1
 
-# Places and routes vea_core for ECP5_DEVICE. Prints the device utilisation table, the
+# Places and routes PNR_TOP for ECP5_DEVICE. Prints the device utilisation table, the
 # clock-to-clock critical path (the synchronous logic that caps max frequency; the
 # cross-domain paths to/from unconstrained I/O are noise until there is an LPF file, so
 # they are left out), and the max frequency result. nextpnr's full log (louder still:
 # --no-print-critical-path-source only drops the file/line source annotations) goes to
-# build/pnr.log instead of the terminal. No LPF pin constraints file yet (see
-# vea_core.sv's imem/dmem ports), so nextpnr-ecp5 auto-assigns I/O pins; a real board
-# bring-up will need one.
+# build/pnr.log instead of the terminal. Without USE_LPF, the top is vea_pnr_top, which has
+# only 5 pins, and nextpnr-ecp5 auto-assigns them. With USE_LPF, the top is vea_core. Any
+# port that the LPF file does not constrain gets an automatic pin.
 pnr:
 	@mkdir -p build
-	@echo "== synth_ecp5 vea_core.sv ($(ECP5_DEVICE))"
-	@$(YOSYS) -q -p "read_verilog $(YOSYS_READ_FLAGS) $(PKG_FILES:%=%.sv) $(RTL_FILES:%=%.sv) vea_core.sv; \
-	  synth_ecp5 $(YOSYS_SYNTH_FLAGS) -top vea_core -json build/vea_core.json"
-	@echo "== nextpnr-ecp5 vea_core.sv ($(ECP5_DEVICE))"
+	@echo "== synth_ecp5 $(PNR_TOP) ($(ECP5_DEVICE))"
+	@$(YOSYS) -q -p "read_verilog $(YOSYS_READ_FLAGS) $(PKG_FILES:%=%.sv) $(RTL_FILES:%=%.sv) vea_core.sv vea_pnr_top.sv; \
+	  synth_ecp5 $(YOSYS_SYNTH_FLAGS) -top $(PNR_TOP) -json $(PNR_JSON)"
+	@echo "== nextpnr-ecp5 $(PNR_TOP) ($(ECP5_DEVICE), pins: $(if $(USE_LPF),$(USE_LPF),none), target $(if $(PNR_FREQ),$(PNR_FREQ) MHz,12 MHz default))"
 	@$(NEXTPNR_ECP5) --test
-	@$(NEXTPNR_ECP5) --package CABGA381 --json build/vea_core.json --$(ECP5_DEVICE) --parallel-refine \
-		--tmg-ripup --speed 6 > build/pnr.log 2>&1; rc=$$?; \
+	@if [ -n "$(PNR_LIVE)" ]; then \
+	    $(NEXTPNR_ECP5) $(PNR_FLAGS) --log build/pnr.log; rc=$$?; \
+	  else \
+	    $(NEXTPNR_ECP5) $(PNR_FLAGS) > build/pnr.log 2>&1; rc=$$?; \
+	  fi; \
 	  awk '/^Info: Device utilisation:/ {p=1} p {sub(/^Info: ?/, ""); print} p && /^$$/ {p=0}' build/pnr.log; \
 	  echo; \
 	  awk '/Critical path report for clock .* \(posedge -> posedge\):/ {p=1} \

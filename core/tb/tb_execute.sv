@@ -16,6 +16,9 @@ module tb_execute #(
   logic [63:0]  ex_a = '0;
   logic [63:0]  ex_b = '0;
   logic [63:0]  ex_c = '0;
+  logic         ex_fwd_a = 1'b0;
+  logic         ex_fwd_b = 1'b0;
+  logic         ex_fwd_c = 1'b0;
   logic [4:0]   ex_rd = '0;
   logic         ex_wr_en = 1'b0;
   logic         ex_is_branch = 1'b0;
@@ -28,6 +31,9 @@ module tb_execute #(
   logic         ex_is_halt = 1'b0;
   logic         ex_illegal = 1'b0;
   logic         ex_ready;
+
+  logic [63:0]  fwd_data = '0;
+  logic         redirect_valid = 1'b0;
 
   logic         wb_valid;
   logic [4:0]   wb_rd;
@@ -66,8 +72,9 @@ module tb_execute #(
   endtask
 
   task automatic do_reset();
-    rst_n    = 1'b0;
-    ex_valid = 1'b0;
+    rst_n          = 1'b0;
+    ex_valid       = 1'b0;
+    redirect_valid = 1'b0;
     tick(3);
     rst_n = 1'b1;
   endtask
@@ -78,6 +85,7 @@ module tb_execute #(
   typedef struct {
     logic [3:0]  alu_op;
     logic [63:0] a, b, c;
+    logic        fwd_a, fwd_b, fwd_c;
     logic [4:0]  rd;
     logic        wr_en;
     logic        is_branch;
@@ -95,6 +103,9 @@ module tb_execute #(
     ex_a         = i.a;
     ex_b         = i.b;
     ex_c         = i.c;
+    ex_fwd_a     = i.fwd_a;
+    ex_fwd_b     = i.fwd_b;
+    ex_fwd_c     = i.fwd_c;
     ex_rd        = i.rd;
     ex_wr_en     = i.wr_en;
     ex_is_branch = i.is_branch;
@@ -107,8 +118,43 @@ module tb_execute #(
     ex_illegal   = i.illegal;
   endtask
 
-  // ex_ready is combinational: a non-memory instruction can already be ready before the
-  // first clock edge. The initial #1 catches that case.
+  // Execute must use only its own copy of an instruction after the ID/EX register takes
+  // it. Random values on every ex_ input find a design that reads an input directly.
+  task automatic scramble_inputs();
+    ex_alu_op    = 4'($urandom);
+    ex_a         = {$urandom, $urandom};
+    ex_b         = {$urandom, $urandom};
+    ex_c         = {$urandom, $urandom};
+    ex_fwd_a     = 1'($urandom);
+    ex_fwd_b     = 1'($urandom);
+    ex_fwd_c     = 1'($urandom);
+    ex_rd        = 5'($urandom);
+    ex_wr_en     = 1'($urandom);
+    ex_is_branch = 1'($urandom);
+    ex_pred      = 3'($urandom);
+    ex_is_load   = 1'($urandom);
+    ex_is_store  = 1'($urandom);
+    ex_mem_size  = 2'($urandom);
+    ex_mem_sext  = 1'($urandom);
+    ex_is_trap   = 1'($urandom);
+    ex_illegal   = 1'($urandom);
+  endtask
+
+  // The ID/EX register takes an instruction on the clock edge. The register must be
+  // free, or the instruction is lost. ex_valid then goes low, so the register takes only
+  // this one instruction.
+  task automatic issue(input insn_t i);
+    drive(i);
+    #1;
+    check64(64'(ex_ready), 64'b1, "ID/EX register is free for the next instruction");
+    tick();
+    ex_valid = 1'b0;
+    scramble_inputs();
+  endtask
+
+  // Waits for the instruction in the ID/EX register to complete. ex_ready is
+  // combinational: a non-memory instruction can already be complete right after the edge
+  // that took it. The initial #1 catches that case.
   task automatic wait_ready();
     int guard = 0;
     #1;
@@ -249,11 +295,14 @@ module tb_execute #(
     logic        alu_unsupp;
     logic [63:0] want_data;
     logic        want_wr;
+    logic [63:0] a_eff, b_eff;
 
-    drive(i);
+    issue(i);
     wait_ready();
 
-    ref_alu(i.alu_op, i.a, i.b, alu_res, alu_unsupp);
+    a_eff = i.fwd_a ? fwd_data : i.a;
+    b_eff = i.fwd_b ? fwd_data : i.b;
+    ref_alu(i.alu_op, a_eff, b_eff, alu_res, alu_unsupp);
     want_wr   = i.wr_en & ~alu_unsupp;
     want_data = i.is_load ? low_bytes(mem_rdata, i.mem_size) : alu_res;
     if (i.is_load && i.mem_sext) begin
@@ -273,22 +322,20 @@ module tb_execute #(
     check64(64'(wb_redirect_valid), 64'b0, {name, " wb_redirect_valid"});
 
     tick();
-    ex_valid = 1'b0;
   endtask
 
   task automatic retire_branch(input string name, input insn_t i, input bit want_taken);
     logic [63:0] sum;
 
-    drive(i);
+    issue(i);
     wait_ready();
 
-    sum = i.a + i.b;
+    sum = (i.fwd_a ? fwd_data : i.a) + (i.fwd_b ? fwd_data : i.b);
     check64(64'(wb_redirect_valid), 64'(want_taken), {name, " wb_redirect_valid"});
     if (want_taken) check64(64'(wb_redirect_pc), 64'(sum[63:2]), {name, " wb_redirect_pc"});
     check64(64'(wb_valid), 64'b0, {name, " wb_valid"});
 
     tick();
-    ex_valid = 1'b0;
   endtask
 
   // Issues a CMP or CMP_S so the next branch reads its condition codes. No output check:
@@ -299,10 +346,9 @@ module tb_execute #(
     i.alu_op = op;
     i.a      = a;
     i.b      = b;
-    drive(i);
+    issue(i);
     wait_ready();
     tick();
-    ex_valid = 1'b0;
   endtask
 
   // ---- Tests --------------------------------------------------------------------------
@@ -381,12 +427,11 @@ module tb_execute #(
     i.pred      = PRED_ALWAYS;
     i.illegal   = 1'b1;
 
-    drive(i);
+    issue(i);
     wait_ready();
     check64(64'(wb_valid),          64'b0, "illegal instruction: no write");
     check64(64'(wb_redirect_valid), 64'b0, "illegal instruction: no redirect");
     tick();
-    ex_valid = 1'b0;
     check64(64'(err_illegal), 64'b1, "err_illegal latches after an illegal instruction");
     check_stuck("illegal");
     do_reset();
@@ -403,11 +448,10 @@ module tb_execute #(
     i.wr_en  = 1'b1;
     i.rd     = 5'd4;
 
-    drive(i);
+    issue(i);
     wait_ready();
     check64(64'(wb_valid), 64'b0, "div: no write");
     tick();
-    ex_valid = 1'b0;
     check64(64'(err_unsupported), 64'b1, "err_unsupported latches after div");
     check_stuck("unsupported");
     do_reset();
@@ -422,12 +466,11 @@ module tb_execute #(
     i.a       = 64'h5;
     i.is_trap = 1'b1;
 
-    drive(i);
+    issue(i);
     wait_ready();
     check64(64'(wb_valid),          64'b0, "trap: no write");
     check64(64'(wb_redirect_valid), 64'b0, "trap: no redirect");
     tick();
-    ex_valid = 1'b0;
     check64(64'(err_trap), 64'b1, "err_trap latches after a trap");
     check_stuck("trap");
     do_reset();
@@ -493,12 +536,11 @@ module tb_execute #(
       bi.b         = 64'(off);
       bi.is_branch = 1'b1;
       bi.pred      = PRED_ALWAYS;
-      drive(bi);
+      issue(bi);
       wait_ready();
       check64(64'(wb_redirect_valid), 64'(off == 0),
               $sformatf("unaligned +%0d: wb_redirect_valid", off));
       tick();
-      ex_valid = 1'b0;
       check64(64'(err_unaligned), 64'(off != 0), $sformatf("unaligned +%0d: err_unaligned", off));
       if (off != 0) begin
         check_stuck($sformatf("unaligned +%0d", off));
@@ -604,7 +646,8 @@ module tb_execute #(
     i.wr_en    = 1'b1;
     i.rd       = 5'd11;
     i.mem_size = SIZE_D;
-    drive(i);
+    issue(i);
+    check64(64'(mem_req_valid), 64'b0, "no request in the first cycle: the address is not ready");
 
     for (int c = 0; c < 5; c++) begin
       tick();
@@ -617,7 +660,309 @@ module tb_execute #(
     wait_ready();
     check64(wb_data, 64'hCAFE_BABE_DEAD_BEEF, "load after backpressure: data");
     tick();
+  endtask
+
+  // ---- ID/EX register and forwarding ------------------------------------------------------
+
+  // The ID/EX register hides an instruction from the outputs until the clock edge takes
+  // it. An instruction that reaches wb_valid in the cycle it is presented puts the
+  // register file read and the ALU back into one cycle. OR is combinational, so it
+  // completes in the first cycle after the edge. ADD and SUB wait one more cycle for their
+  // adder.
+  task automatic test_id_ex_register();
+    insn_t i;
+
+    i        = '{default: '0};
+    i.alu_op = OP_OR;
+    i.a      = 64'd1;
+    i.b      = 64'd2;
+    i.wr_en  = 1'b1;
+    i.rd     = 5'd3;
+    drive(i);
+    #1;
+    check64(64'(wb_valid), 64'b0, "presented instruction: wb_valid low before the edge");
+    tick();
     ex_valid = 1'b0;
+    check64(64'(wb_valid), 64'b1, "wb_valid high after the edge takes the instruction");
+    check64(wb_data,       64'd3, "wb_data after the edge takes the instruction");
+    tick();
+    check64(64'(wb_valid), 64'b0, "wb_valid low once the register is empty");
+  endtask
+
+  // ADD and SUB take two cycles in Execute: the first cycle loads the adder register,
+  // and the second cycle has the result. The register must stay busy in between, and
+  // wb_valid must pulse only in the second cycle.
+  task automatic test_add_wait();
+    logic [3:0] ops [2];
+    logic [63:0] want;
+    insn_t i;
+
+    ops = '{OP_ADD, OP_SUB};
+    for (int o = 0; o < 2; o++) begin
+      i        = '{default: '0};
+      i.alu_op = ops[o];
+      i.a      = 64'd100;
+      i.b      = 64'd58;
+      i.wr_en  = 1'b1;
+      i.rd     = 5'd3;
+      want     = (o == 0) ? 64'd158 : 64'd42;
+
+      drive(i);
+      #1;
+      check64(64'(wb_valid), 64'b0, $sformatf("op %0d: wb_valid low before the edge", o));
+      tick();
+      ex_valid = 1'b0;
+      scramble_inputs();
+      #1;
+      check64(64'(wb_valid), 64'b0, $sformatf("op %0d: wb_valid low in the first cycle", o));
+      check64(64'(ex_ready), 64'b0, $sformatf("op %0d: register busy in the first cycle", o));
+      tick();
+      check64(64'(wb_valid), 64'b1, $sformatf("op %0d: wb_valid high in the second cycle", o));
+      check64(wb_data,       want,  $sformatf("op %0d: result in the second cycle", o));
+      check64(64'(ex_ready), 64'b1, $sformatf("op %0d: register free in the second cycle", o));
+      tick();
+      check64(64'(wb_valid), 64'b0, $sformatf("op %0d: wb_valid low in the third cycle", o));
+    end
+  endtask
+
+  // An instruction that completes in one cycle must free the register for the next one
+  // in that same cycle. Without this, the core issues an instruction every second cycle.
+  // OR is combinational, so this checks the one-cycle case. ADD has its own test below.
+  task automatic test_back_to_back();
+    insn_t a, b;
+
+    a        = '{default: '0};
+    a.alu_op = OP_OR;
+    a.a      = 64'd1;
+    a.b      = 64'd2;
+    a.wr_en  = 1'b1;
+    a.rd     = 5'd3;
+    b        = '{default: '0};
+    b.alu_op = OP_OR;
+    b.a      = 64'd10;
+    b.b      = 64'd20;
+    b.wr_en  = 1'b1;
+    b.rd     = 5'd4;
+
+    drive(a);
+    tick();
+    drive(b);
+    #1;
+    check64(64'(ex_ready), 64'b1, "back to back: ex_ready while the first instruction completes");
+    check64(wb_data,       64'd3, "back to back: first result");
+    tick();
+    ex_valid = 1'b0;
+    check64(64'(wb_rd), 64'd4,  "back to back: second rd");
+    check64(wb_data,    64'd30, "back to back: second result");
+    tick();
+  endtask
+
+  // Two ADDs in a row. The second one must wait for the first, and each result must come
+  // in the second cycle of its own instruction, not the first result again.
+  task automatic test_add_back_to_back();
+    insn_t a, b;
+
+    a        = '{default: '0};
+    a.alu_op = OP_ADD;
+    a.a      = 64'd1;
+    a.b      = 64'd2;
+    a.wr_en  = 1'b1;
+    a.rd     = 5'd3;
+    b        = '{default: '0};
+    b.alu_op = OP_ADD;
+    b.a      = 64'd10;
+    b.b      = 64'd20;
+    b.wr_en  = 1'b1;
+    b.rd     = 5'd4;
+
+    drive(a);
+    tick();
+    drive(b);
+    #1;
+    check64(64'(ex_ready), 64'b0, "add back to back: ex_ready low while the first add waits");
+    check64(64'(wb_valid), 64'b0, "add back to back: no write in the first cycle");
+    tick();
+    check64(64'(ex_ready), 64'b1, "add back to back: ex_ready while the first add completes");
+    check64(64'(wb_rd),    64'd3, "add back to back: first rd");
+    check64(wb_data,       64'd3, "add back to back: first result");
+    tick();
+    ex_valid = 1'b0;
+    check64(64'(wb_valid), 64'b0, "add back to back: second add waits, no write");
+    tick();
+    check64(64'(wb_rd), 64'd4,  "add back to back: second rd");
+    check64(wb_data,    64'd30, "add back to back: second result");
+    tick();
+  endtask
+
+  // A forwarded operand comes from fwd_data, not from the ex_ input that the ID/EX
+  // register took. The stale ex_ value is random, so a design that ignores the select
+  // gets a wrong result.
+  task automatic test_forward();
+    logic [3:0] ops [3];
+    insn_t      i;
+
+    ops = '{OP_ADD, OP_SUB, OP_MUL};
+    for (int o = 0; o < 3; o++)
+      for (int n = 0; n < 8; n++)
+        for (int f = 0; f < 4; f++) begin
+          fwd_data = {$urandom, $urandom};
+          i        = '{default: '0};
+          i.alu_op = ops[o];
+          i.a      = {$urandom, $urandom};
+          i.b      = {$urandom, $urandom};
+          i.fwd_a  = f[0];
+          i.fwd_b  = f[1];
+          i.wr_en  = 1'b1;
+          i.rd     = 5'(n + 1);
+          retire($sformatf("forward op %h n %0d select %0d", ops[o], n, f), i);
+        end
+    fwd_data = '0;
+  endtask
+
+  // The target of a branch is the ALU sum, so a forwarded operand must reach the target.
+  task automatic test_forward_branch();
+    insn_t i;
+
+    for (int f = 0; f < 4; f++) begin
+      fwd_data     = {$urandom, $urandom} & ~64'h3;
+      i            = '{default: '0};
+      i.alu_op     = OP_ADD;
+      i.a          = {$urandom, $urandom} & ~64'h3;
+      i.b          = {$urandom, $urandom} & ~64'h3;
+      i.fwd_a      = f[0];
+      i.fwd_b      = f[1];
+      i.is_branch  = 1'b1;
+      i.pred       = PRED_ALWAYS;
+      retire_branch($sformatf("forward branch select %0d", f), i, 1'b1);
+    end
+    fwd_data = '0;
+  endtask
+
+  // The address of a load and the value of a store are both forwarded operands. The
+  // address is checked on the memory port, because the load result alone does not show
+  // a wrong address.
+  task automatic test_forward_mem();
+    insn_t       i;
+    logic [1:0]  sizes [4];
+    logic [63:0] addr, data;
+
+    sizes = '{SIZE_B, SIZE_H, SIZE_W, SIZE_D};
+
+    for (int s = 0; s < 4; s++) begin
+      addr = 64'(3200 + s * 16);
+      data = {$urandom, $urandom};
+      mem_write(addr, data, sizes[s]);
+
+      fwd_data   = addr;
+      i          = '{default: '0};
+      i.alu_op   = OP_ADD;
+      i.a        = {$urandom, $urandom};
+      i.fwd_a    = 1'b1;
+      i.is_load  = 1'b1;
+      i.wr_en    = 1'b1;
+      i.rd       = 5'd6;
+      i.mem_size = sizes[s];
+      issue(i);
+      tick();
+      check64(64'(mem_req_valid), 64'b1, $sformatf("forwarded load request, size %0d", s));
+      check64(mem_req.addr, addr, $sformatf("forwarded load address, size %0d", s));
+      wait_ready();
+      check64(wb_data, low_bytes(data, sizes[s]), $sformatf("forwarded load data, size %0d", s));
+      tick();
+
+      addr       = 64'(3300 + s * 16);
+      data       = {$urandom, $urandom};
+      fwd_data   = data;
+      i          = '{default: '0};
+      i.alu_op   = OP_ADD;
+      i.a        = addr;
+      i.c        = {$urandom, $urandom};
+      i.fwd_c    = 1'b1;
+      i.is_store = 1'b1;
+      i.mem_size = sizes[s];
+      retire($sformatf("forwarded store, size %0d", s), i);
+      check64(mem_read(addr, sizes[s]), low_bytes(data, sizes[s]),
+              $sformatf("forwarded store value, size %0d", s));
+    end
+    fwd_data = '0;
+  endtask
+
+  // A redirect arrives in the cycle after the branch completes. The instruction that
+  // entered the ID/EX register in that cycle is on the wrong path, and it must change
+  // nothing. Each case here has one side effect that must not happen.
+  task automatic test_redirect_squash();
+    insn_t i, bi;
+
+    i        = '{default: '0};
+    i.alu_op = OP_ADD;
+    i.a      = 64'd1;
+    i.b      = 64'd2;
+    i.wr_en  = 1'b1;
+    i.rd     = 5'd9;
+    issue(i);
+    redirect_valid = 1'b1;
+    #1;
+    check64(64'(wb_valid), 64'b0, "wrong-path write: no wb_valid");
+    check64(64'(ex_ready), 64'b1, "wrong-path add: it does not wait for the adder");
+    tick();
+    redirect_valid = 1'b0;
+    check64(64'(wb_valid), 64'b0, "wrong-path write: no wb_valid after the redirect");
+    check64(64'(ex_ready), 64'b1, "wrong-path write: ID/EX register empty after the redirect");
+
+    // The condition codes keep the result of the CMP before the wrong-path CMP.
+    issue_cmp(OP_CMP, 64'd5, 64'd5);
+    i        = '{default: '0};
+    i.alu_op = OP_CMP;
+    i.a      = 64'd1;
+    i.b      = 64'd9;
+    issue(i);
+    redirect_valid = 1'b1;
+    tick();
+    redirect_valid = 1'b0;
+    bi           = '{default: '0};
+    bi.alu_op    = OP_ADD;
+    bi.a         = 64'h100;
+    bi.is_branch = 1'b1;
+    bi.pred      = PRED_EQ;
+    retire_branch("wrong-path cmp does not change the condition codes", bi, 1'b1);
+
+    i          = '{default: '0};
+    i.alu_op   = OP_ADD;
+    i.a        = 64'd3000;
+    i.is_load  = 1'b1;
+    i.wr_en    = 1'b1;
+    i.rd       = 5'd2;
+    i.mem_size = SIZE_D;
+    issue(i);
+    redirect_valid = 1'b1;
+    #1;
+    check64(64'(mem_req_valid), 64'b0, "wrong-path load: no memory request");
+    tick();
+    redirect_valid = 1'b0;
+    check64(64'(mem_req_valid), 64'b0, "wrong-path load: no memory request after the redirect");
+
+    // A taken branch with a target off a 4-byte boundary would fault, and would redirect.
+    bi           = '{default: '0};
+    bi.alu_op    = OP_ADD;
+    bi.a         = 64'h1001;
+    bi.is_branch = 1'b1;
+    bi.pred      = PRED_ALWAYS;
+    issue(bi);
+    redirect_valid = 1'b1;
+    #1;
+    check64(64'(wb_redirect_valid), 64'b0, "wrong-path branch: no redirect");
+    tick();
+    redirect_valid = 1'b0;
+    check64(64'(err_unaligned), 64'b0, "wrong-path branch: no err_unaligned");
+
+    i         = '{default: '0};
+    i.illegal = 1'b1;
+    issue(i);
+    redirect_valid = 1'b1;
+    tick();
+    redirect_valid = 1'b0;
+    check64(64'(err_illegal), 64'b0, "wrong-path illegal instruction: no err_illegal");
+    check64(64'(ex_ready),    64'b1, "wrong-path illegal instruction: the core does not stop");
   endtask
 
   initial begin
@@ -645,6 +990,22 @@ module tb_execute #(
     test_store();
     $display("tb_execute: test_mem_backpressure");
     test_mem_backpressure();
+    $display("tb_execute: test_id_ex_register");
+    test_id_ex_register();
+    $display("tb_execute: test_add_wait");
+    test_add_wait();
+    $display("tb_execute: test_back_to_back");
+    test_back_to_back();
+    $display("tb_execute: test_add_back_to_back");
+    test_add_back_to_back();
+    $display("tb_execute: test_forward");
+    test_forward();
+    $display("tb_execute: test_forward_branch");
+    test_forward_branch();
+    $display("tb_execute: test_forward_mem");
+    test_forward_mem();
+    $display("tb_execute: test_redirect_squash");
+    test_redirect_squash();
 
     $display("tb_execute: %0d checks, %0d errors", checks, errors);
     if (errors != 0) $fatal(1, "tb_execute failed");

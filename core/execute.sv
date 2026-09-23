@@ -139,18 +139,23 @@ module vea_execute (
   // ---- ALU -----------------------------------------------------------------------
 
   logic [63:0] alu_result;
+  logic [63:0] alu_add_result;
   logic [3:0]  alu_flags;
   logic        alu_flags_valid;
   logic        alu_unsupported;
+  logic        alu_late;
 
   vea_alu u_alu (
+    .clk         (clk),
     .a           (op_a),
     .b           (op_b),
     .op          (x_alu_op),
     .result      (alu_result),
+    .add_result  (alu_add_result),
     .flags       (alu_flags),
     .flags_valid (alu_flags_valid),
-    .unsupported (alu_unsupported)
+    .unsupported (alu_unsupported),
+    .late        (alu_late)
   );
 
   //! Any fault stops the core for good, so this also gates out whatever instruction is
@@ -239,14 +244,17 @@ module vea_execute (
 
   // ---- Memory and multiply wait --------------------------------------------------------
 
-  //! A load or a store takes two+ cycles: request, then reply. MUL takes several cycles
-  //! too, in vea_mul. Both hold Execute the same way. Decode stages the next instruction
-  //! while either one runs.
-  typedef enum logic [1:0] { S_IDLE, S_MEM_WAIT, S_MUL_WAIT } wait_state_t;
+  //! ADD and SUB take one wait cycle. Their adder has a result register. A load, a store
+  //! and a branch use ADD for the address or the target, so they wait too. A load or a
+  //! store then takes two more cycles: request, then reply. MUL takes several cycles, in
+  //! vea_mul. All of these hold Execute the same way. Decode stages the next instruction
+  //! while one of them runs.
+  typedef enum logic [1:0] { S_IDLE, S_ADD_WAIT, S_MEM_WAIT, S_MUL_WAIT } wait_state_t;
 
   wait_state_t state, next_state;
-  logic        mem_op, mem_req_taken, mul_op;
+  logic        late_op, mem_op, mem_req_taken, mul_op;
 
+  assign late_op       = valid_op && alu_late;
   assign mem_op        = valid_op && (x_is_load || x_is_store);
   assign mem_req_taken = mem_req_valid && mem_req_ready;
   assign mul_op        = valid_op && is_mul;
@@ -255,8 +263,14 @@ module vea_execute (
     next_state = state;
     unique case (state)
       S_IDLE: begin
+        if (late_op)     next_state = S_ADD_WAIT;
+        else if (mul_op) next_state = S_MUL_WAIT;
+      end
+      // Decode gives every load and store the ADD operation. So a memory operation is
+      // always here, with its address in alu_add_result.
+      S_ADD_WAIT: begin
         if (mem_req_taken) next_state = S_MEM_WAIT;
-        else if (mul_op)   next_state = S_MUL_WAIT;
+        else if (!mem_op)  next_state = S_IDLE;
       end
       S_MEM_WAIT: if (mem_rvalid) next_state = S_IDLE;
       S_MUL_WAIT: if (mul_valid)  next_state = S_IDLE;
@@ -268,10 +282,10 @@ module vea_execute (
     else        state <= next_state;
   end
 
-  assign mem_req_valid = (state == S_IDLE) && mem_op;
+  assign mem_req_valid = (state == S_ADD_WAIT) && mem_op;
   assign mul_start      = (state == S_IDLE) && mul_op;
   // A plain concatenation, field order MSB first as in vea_pkg::mem_req_t
-  assign mem_req        = {alu_result, x_is_store, x_mem_size, op_c};
+  assign mem_req        = {alu_add_result, x_is_store, x_mem_size, op_c};
 
   // Matches the opinfo size field (LS_SIZE_D/B/H/W). A narrow load sits low in
   // mem_rdata; the rest is sign- or zero-extended.
@@ -302,7 +316,8 @@ module vea_execute (
 
   always_comb begin
     unique case (state)
-      S_IDLE:     completing = !mem_op && !mul_op;
+      S_IDLE:     completing = !late_op && !mul_op;
+      S_ADD_WAIT: completing = !mem_op;
       S_MEM_WAIT: completing = mem_rvalid;
       S_MUL_WAIT: completing = mul_valid;
     endcase
@@ -320,10 +335,12 @@ module vea_execute (
   //! [63:2]), so a misaligned target must fault here, before the low bits are dropped.
   logic pc_misaligned;
 
-  assign pc_misaligned     = valid_op && x_is_branch && branch_taken && |alu_result[1:0];
+  // The target always comes from ADD. Reading the ADD result directly keeps the shifters
+  // out of the path to the redirect, the address check and the memory address.
+  assign pc_misaligned     = valid_op && x_is_branch && branch_taken && |alu_add_result[1:0];
   assign wb_redirect_valid = completing && valid_op && x_is_branch && branch_taken
                             && !pc_misaligned;
-  assign wb_redirect_pc    = alu_result[63:2];
+  assign wb_redirect_pc    = alu_add_result[63:2];
 
   // DIV decodes as legal, but vea_alu has no silicon for it. It raises alu_unsupported
   // instead. That must not reach the register file.

@@ -1,5 +1,6 @@
-//! Testbench for vea_alu. See ../alu.sv for the module. The module has no clock, so
-//! every check is a #1 settle after driving new inputs.
+//! Testbench for vea_alu. See ../alu.sv for the module. Every check is one clock edge
+//! after driving new inputs, so the registers of ADD and SUB load. Only those two results
+//! come from registers.
 
 module tb_alu #(
   parameter int SEED = 0
@@ -9,13 +10,22 @@ module tb_alu #(
   localparam logic [3:0] OP_SAR = 4'h8, OP_MUL = 4'h9, OP_DIV = 4'hA;
   localparam logic [3:0] OP_CMP = 4'hB, OP_CMP_S = 4'hC;
 
+  logic clk;
+
+  initial begin
+    clk = 1'b0;
+    forever #5 clk = ~clk;
+  end
+
   logic [63:0] a = '0;
   logic [63:0] b = '0;
   logic [3:0]  op = '0;
   logic [63:0] result;
+  logic [63:0] add_result;
   logic [3:0]  flags;
   logic        flags_valid;
   logic        unsupported;
+  logic        late;
 
   vea_alu dut (.*);
 
@@ -31,11 +41,20 @@ module tb_alu #(
     end
   endtask
 
+  // The result of ADD and SUB must come from the registers only. So after the edge, a and
+  // b change to random values, and a design that reads them directly gets a wrong result.
+  // Every other operation is combinational and keeps its operands.
   task automatic apply(input logic [63:0] av, input logic [63:0] bv, input logic [3:0] opv);
     a  = av;
     b  = bv;
     op = opv;
+    @(posedge clk);
     #1;
+    if (opv == OP_ADD || opv == OP_SUB) begin
+      a = {$urandom, $urandom};
+      b = {$urandom, $urandom};
+      #1;
+    end
   endtask
 
   // ---- Reference model ------------------------------------------------------------------
@@ -48,7 +67,8 @@ module tb_alu #(
 
   task automatic ref_model(input logic [63:0] av, input logic [63:0] bv, input logic [3:0] opv,
                             output logic [63:0] res, output logic [3:0] fl,
-                            output logic fl_valid, output logic unsupp);
+                            output logic fl_valid, output logic unsupp,
+                            output logic is_late);
     logic [63:0] diff;
     logic [5:0]  shamt;
     bit          sub_ovf;
@@ -61,6 +81,7 @@ module tb_alu #(
     fl       = '0;
     fl_valid = 1'b0;
     unsupp   = 1'b0;
+    is_late  = (opv == OP_ADD) || (opv == OP_SUB);
 
     case (opv)
       OP_ADD: res = av + bv;
@@ -95,15 +116,18 @@ module tb_alu #(
                            input logic [3:0] opv);
     logic [63:0] want_res;
     logic [3:0]  want_flags;
-    logic        want_flags_valid, want_unsupp;
+    logic        want_flags_valid, want_unsupp, want_late;
 
-    ref_model(av, bv, opv, want_res, want_flags, want_flags_valid, want_unsupp);
+    ref_model(av, bv, opv, want_res, want_flags, want_flags_valid, want_unsupp, want_late);
     apply(av, bv, opv);
 
     check64(result,             want_res,             {name, ": result"});
+    // add_result is the ADD register, so it holds a + b for every op.
+    check64(add_result,         av + bv,               {name, ": add_result"});
     check64(64'(flags),         64'(want_flags),       {name, ": flags"});
     check64(64'(flags_valid),   64'(want_flags_valid), {name, ": flags_valid"});
     check64(64'(unsupported),   64'(want_unsupp),      {name, ": unsupported"});
+    check64(64'(late),          64'(want_late),        {name, ": late"});
   endtask
 
   // ---- Directed operand pairs, reused across ops -----------------------------------------

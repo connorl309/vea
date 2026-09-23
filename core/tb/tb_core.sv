@@ -154,9 +154,11 @@ module tb_core #(
   // ID/EX register at that time. A load there can wait many cycles for the memory.
   // The register file is final only when Execute is empty and Writeback has no write.
   // A halt on the wrong path of a branch also latches, for a short time. The branch is
-  // then still in Execute, so this check does not stop on it.
+  // then still in Execute, so this check does not stop on it. In the cycle after the
+  // branch completes, Execute is empty but the redirect has not cleared the latch yet.
+  // The redirect_valid term covers that cycle.
   function automatic bit drained();
-    drained = halt && !dut.u_execute.x_valid && !dut.rf_wr_en;
+    drained = halt && !dut.u_execute.x_valid && !dut.rf_wr_en && !dut.redirect_valid;
   endfunction
 
   task automatic run_until_halt(input string name, input int max_cycles);

@@ -21,11 +21,14 @@ module tb_decode #(
   logic            halt;
   logic [4:0]      rf_raddr_a, rf_raddr_b, rf_raddr_c;
   logic [63:0]     rf_rdata_a, rf_rdata_b, rf_rdata_c;
+  logic            wb_valid       = 1'b0;
+  logic [4:0]      wb_rd          = '0;
   logic            ex_valid;
   logic            ex_ready       = 1'b1;
   logic [63:0]     ex_pc;
   logic [3:0]      ex_alu_op;
   logic [63:0]     ex_a, ex_b, ex_c;
+  logic            ex_fwd_a, ex_fwd_b, ex_fwd_c;
   logic [4:0]      ex_rd;
   logic            ex_wr_en, ex_is_branch;
   logic [2:0]      ex_pred;
@@ -813,6 +816,156 @@ module tb_decode #(
     redirect_valid = 1'b0;
   endtask
 
+  // ---- Forward selects -------------------------------------------------------------------
+
+  // Puts the frame that the caller built into stage 2, and keeps it there. Execute is not
+  // ready, so the instruction stays while the test changes wb_valid and wb_rd. The reset
+  // first empties stage 2, because a full stage 2 does not take a new frame.
+  task automatic hold_in_stage2();
+    do_reset();
+    frame_valid = 1'b1;
+    tick();
+    frame_valid = 1'b0;
+    ex_ready    = 1'b0;
+  endtask
+
+  // A register number of -1 means that the operand does not come from a register, so its
+  // select must stay low for every wb_rd. For ex_fwd_c, -2 means that Execute does not
+  // read the select for this instruction, so the test does not check it. All 32 values of
+  // wb_rd run, so a register byte that is really part of an immediate, or of the next
+  // instruction, also meets a matching wb_rd.
+  task automatic check_fwd(input string name, input int reg_a, input int reg_b, input int reg_c);
+    for (int wv = 0; wv < 2; wv++)
+      for (int wr = 0; wr < 32; wr++) begin
+        wb_valid = 1'(wv);
+        wb_rd    = 5'(wr);
+        #1;
+        check64(64'(ex_fwd_a), 64'(wv == 1 && reg_a == wr),
+                $sformatf("%s wb_valid %0d wb_rd %0d ex_fwd_a", name, wv, wr));
+        check64(64'(ex_fwd_b), 64'(wv == 1 && reg_b == wr),
+                $sformatf("%s wb_valid %0d wb_rd %0d ex_fwd_b", name, wv, wr));
+        if (reg_c != -2)
+          check64(64'(ex_fwd_c), 64'(wv == 1 && reg_c == wr),
+                  $sformatf("%s wb_valid %0d wb_rd %0d ex_fwd_c", name, wv, wr));
+      end
+    wb_valid = 1'b0;
+    ex_ready = 1'b1;
+  endtask
+
+  task automatic run_fwd(input string name, input int reg_a, input int reg_b, input int reg_c);
+    hold_in_stage2();
+    check_fwd(name, reg_a, reg_b, reg_c);
+  endtask
+
+  // The immediates are register numbers on purpose. An immediate byte is at the position
+  // of a register byte in another format, so it must never set a select.
+  task automatic test_forward_select();
+    junk_mode = 0;
+
+    begin_insn(8'h01); put_reg(5); put_reg(6);   end_insn(4'h0);
+    run_fwd("mov r5, r6", 6, -1, -2);
+    begin_insn(8'h01); put_reg(5); put_imm(6);   end_insn(4'h1);
+    run_fwd("mov r5, #6", -1, -1, -2);
+    begin_insn(8'h14); put_reg(5); put_reg(6);   end_insn(4'h0);
+    run_fwd("not r5, r6", 6, -1, -2);
+    begin_insn(8'h14); put_reg(5); put_imm(6);   end_insn(4'h1);
+    run_fwd("not r5, #6", -1, -1, -2);
+
+    begin_insn(8'h20); put_reg(6); put_reg(7);   end_insn(4'h0);
+    run_fwd("cmp r6, r7", 6, 7, -2);
+    begin_insn(8'h21); put_reg(6); put_imm(7);   end_insn(4'h1);
+    run_fwd("cmp.s r6, #7", 6, -1, -2);
+
+    begin_insn(8'h10); put_reg(5); put_reg(6); put_reg(7); end_insn(4'h0);
+    run_fwd("add r5, r6, r7", 6, 7, -2);
+    begin_insn(8'h10); put_reg(5); put_reg(6); put_imm(7); end_insn(4'h1);
+    run_fwd("add r5, r6, #7", 6, -1, -2);
+
+    begin_insn(8'h30); put_reg(6);               end_insn(4'h0);
+    run_fwd("b r6", 6, -1, -2);
+    begin_insn(8'h30); put_imm(6);               end_insn(4'h8);
+    run_fwd("b #6", -1, -1, -2);
+    begin_insn(8'h31); put_reg(6);               end_insn(4'h0);
+    run_fwd("jmp r6", 6, -1, -2);
+    begin_insn(8'h31); put_imm(6);               end_insn(4'h8);
+    run_fwd("jmp #6", -1, -1, -2);
+    begin_insn(8'hFE); put_imm(6);               end_insn(4'h0);
+    run_fwd("trap #6", -1, -1, -2);
+
+    begin_insn(8'h40); put_reg(5); put_reg(6); put_reg(7); end_insn(4'h0);
+    run_fwd("ld r5, [r6 + r7]", 6, 7, -2);
+    begin_insn(8'h40); put_reg(5); put_reg(6); put_imm(7); end_insn(4'h1);
+    run_fwd("ld r5, [r6 + #7]", 6, -1, -2);
+
+    // A store with a displacement has its value register on port B, but the value goes to
+    // Execute as ex_c. So port B sets ex_fwd_c, and never ex_fwd_b.
+    begin_insn(8'h41); put_reg(5); put_reg(6); put_imm(7); end_insn(4'h1);
+    run_fwd("st [r6 + #7], r5", 6, -1, 5);
+  endtask
+
+  // A store with an index register reads its value in a cycle of its own. ex_fwd_c is
+  // then a register. It holds the compare of wb_rd in the cycle of that read. The result
+  // of an instruction that completes later is in the register file, or in Execute, so it
+  // must not change the select.
+  task automatic test_store_forward();
+    junk_mode = 0;
+    begin_insn(8'h41); put_reg(5); put_reg(6); put_reg(7); end_insn(4'h0);
+
+    // The value register is written in the cycle of the read.
+    do_reset();
+    frame_valid = 1'b1;
+    tick();
+    frame_valid = 1'b0;
+    wb_valid    = 1'b1;
+    wb_rd       = 5'd5;
+    tick();
+    check64(64'(ex_valid), 64'b1, "store forward: the store issues after the value read");
+    check64(64'(ex_fwd_c), 64'b1, "store forward: value register written in the read cycle");
+    wb_valid = 1'b0;
+    #1;
+    check64(64'(ex_fwd_c), 64'b1, "store forward: select holds when wb_valid falls");
+    wb_valid = 1'b1;
+    wb_rd    = 5'd8;
+    #1;
+    check64(64'(ex_fwd_c), 64'b1, "store forward: select holds when wb_rd changes");
+    check64(64'(ex_fwd_a), 64'b0, "store forward: base register not written");
+    check64(64'(ex_fwd_b), 64'b0, "store forward: index register not written");
+    wb_rd = 5'd6;
+    #1;
+    check64(64'(ex_fwd_a), 64'b1, "store forward: base register written");
+    check64(64'(ex_fwd_b), 64'b0, "store forward: index is not the base register");
+    wb_rd = 5'd7;
+    #1;
+    check64(64'(ex_fwd_a), 64'b0, "store forward: base is not the index register");
+    check64(64'(ex_fwd_b), 64'b1, "store forward: index register written");
+    wb_valid = 1'b0;
+
+    // Another register is written in the cycle of the read.
+    do_reset();
+    frame_valid = 1'b1;
+    tick();
+    frame_valid = 1'b0;
+    wb_valid    = 1'b1;
+    wb_rd       = 5'd8;
+    tick();
+    wb_rd = 5'd5;
+    #1;
+    check64(64'(ex_fwd_c), 64'b0, "store forward: value register written after the read cycle");
+
+    // The register is not written in the cycle of the read: wb_valid is low.
+    do_reset();
+    frame_valid = 1'b1;
+    tick();
+    frame_valid = 1'b0;
+    wb_valid    = 1'b0;
+    wb_rd       = 5'd5;
+    tick();
+    wb_valid = 1'b1;
+    #1;
+    check64(64'(ex_fwd_c), 64'b0, "store forward: wb_valid low in the read cycle");
+    wb_valid = 1'b0;
+  endtask
+
   initial begin
     process::self().srandom(SEED);
     $display("tb_decode: seed %0d", SEED);
@@ -834,6 +987,10 @@ module tb_decode #(
     test_halt();
     $display("tb_decode: test_handshake");
     test_handshake();
+    $display("tb_decode: test_forward_select");
+    test_forward_select();
+    $display("tb_decode: test_store_forward");
+    test_store_forward();
 
     $display("tb_decode: %0d of %0d frames that must fault raised ex_illegal, %0d of %0d look-alikes did not",
              fault_hit, fault_total, legal_hit, legal_total);
