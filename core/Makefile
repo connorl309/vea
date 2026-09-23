@@ -1,8 +1,10 @@
-# Runs the Verilator testbenches and the Yosys synthesis report for Xilinx FPGAs.
-# Usage: make [all|fetch|decode|execute|writeback|regfile|mem_if|core|conform|run|waves|synth|clean]
+# Runs the Verilator testbenches and the Yosys synthesis / nextpnr-ecp5 place-and-route
+# reports for ECP5 FPGAs.
+# Usage: make [all|fetch|decode|execute|writeback|regfile|mem_if|core|conform|run|waves|synth|pnr|clean]
 
-VERILATOR ?= verilator
-YOSYS ?= yosys
+VERILATOR   ?= verilator
+YOSYS       ?= yosys
+NEXTPNR_ECP5 ?= nextpnr-ecp5
 TB := tb
 
 VEA_SIM_DIR := ../vea_sim
@@ -10,19 +12,22 @@ VEA_SIM_BIN := $(VEA_SIM_DIR)/target/release/vea_sim
 
 # Each file holds one module. The module name is vea_ and the file name, except
 # vea_core, whose file already carries the vea_ prefix.
-RTL_FILES := alu fetch decode execute writeback regfile mem_if
+RTL_FILES := alu fetch decode execute writeback regfile mem_if mul
 # Package files. Every read_verilog call needs these first; none is a synth top.
 PKG_FILES := vea_pkg
 
 # With -noautowire, a name that is not declared is an error. Without it, Yosys makes a
 # new wire (or latch!) for the name.
 YOSYS_READ_FLAGS  := -sv -noautowire
-# The family selects the LUT and flip-flop cells. xc7 is Series 7 (Artix-7, Kintex-7,
-# Virtex-7, Zynq-7000). Other values: make synth XILINX_FAMILY=xcup
-XILINX_FAMILY ?= xc7
+
+# The nextpnr-ecp5 device flag (see `nextpnr-ecp5 --help`, "Architecture specific
+# options"), without the leading --. 45k is the LFE5U-45F. One nextpnr-ecp5 binary
+# covers every ECP5 part, so switching devices is just this flag, no rebuild.
+# Other values: um5g-85k, 85k, 25k, etc. Override with make pnr ECP5_DEVICE=um5g-85k
+ECP5_DEVICE ?= 45k
 
 # With -flatten, Yosys can optimize across module borders, supposedly.
-YOSYS_SYNTH_FLAGS := -family $(XILINX_FAMILY) -flatten -noiopad -noclkbuf
+YOSYS_SYNTH_FLAGS := -flatten -noiopad
 
 # The tests do not lint the units. Lint is a separate step.
 VFLAGS := --binary --timing --timescale 1ns/1ps -Wno-fatal -Wno-lint -Wno-style -Wno-TIMESCALEMOD -j
@@ -32,17 +37,23 @@ VFLAGS := --binary --timing --timescale 1ns/1ps -Wno-fatal -Wno-lint -Wno-style 
 FETCH_LATENCIES := 1 2 3 4
 FETCH_TOGGLES   := 0 1
 
-.PHONY: all alu fetch decode execute writeback regfile mem_if core run waves conform synth clean
+.PHONY: all alu fetch decode execute writeback regfile mem_if core run waves conform synth pnr clean
 
 # The run continues after a failure, so one run shows every testbench result.
 all:
 	@$(MAKE) --keep-going alu fetch decode execute writeback regfile mem_if core conform
 
 alu:
-	@mkdir -p build; echo "== alu"; \
+	@mkdir -p build; rc=0; \
+	echo "== alu"; \
 	  $(VERILATOR) $(VFLAGS)  --top-module tb_alu --Mdir build/alu \
 	    alu.sv $(TB)/tb_alu.sv > /dev/null \
-	  && ./build/alu/Vtb_alu
+	  && ./build/alu/Vtb_alu || rc=1; \
+	echo "== mul"; \
+	  $(VERILATOR) $(VFLAGS)  --top-module tb_mul --Mdir build/mul \
+	    mul.sv $(TB)/tb_mul.sv > /dev/null \
+	  && ./build/mul/Vtb_mul || rc=1; \
+	exit $$rc
 
 fetch:
 	@mkdir -p build; rc=0; for l in $(FETCH_LATENCIES); do for t in $(FETCH_TOGGLES); do \
@@ -61,7 +72,7 @@ decode:
 execute:
 	@mkdir -p build; echo "== execute"; \
 	  $(VERILATOR) $(VFLAGS)  --top-module tb_execute --Mdir build/execute \
-	    vea_pkg.sv alu.sv execute.sv $(TB)/tb_execute.sv > /dev/null \
+	    vea_pkg.sv alu.sv mul.sv execute.sv $(TB)/tb_execute.sv > /dev/null \
 	  && ./build/execute/Vtb_execute
 
 writeback:
@@ -150,17 +161,43 @@ conform:
 # Gets cell counts for each module (roughly). Every file is read every time.
 synth:
 	@for m in $(RTL_FILES); do \
-	  echo "== synth $$m.sv ($(XILINX_FAMILY))"; \
+	  echo "== synth $$m.sv (ecp5)"; \
 	  $(YOSYS) -q -p "read_verilog $(YOSYS_READ_FLAGS) $(PKG_FILES:%=%.sv) $(RTL_FILES:%=%.sv) vea_core.sv; \
-	    synth_xilinx $(YOSYS_SYNTH_FLAGS) -top vea_$$m; \
-	    tee -o /dev/stdout stat -tech xilinx" \
+	    synth_ecp5 $(YOSYS_SYNTH_FLAGS) -top vea_$$m; \
+	    tee -o /dev/stdout stat" \
 	    || exit 1; \
 	done
-	@echo "== synth vea_core.sv ($(XILINX_FAMILY))"; \
+	@echo "== synth vea_core.sv (ecp5)"; \
 	  $(YOSYS) -q -p "read_verilog $(YOSYS_READ_FLAGS) $(PKG_FILES:%=%.sv) $(RTL_FILES:%=%.sv) vea_core.sv; \
-	    synth_xilinx $(YOSYS_SYNTH_FLAGS) -top vea_core; \
-	    tee -o /dev/stdout stat -tech xilinx" \
+	    synth_ecp5 $(YOSYS_SYNTH_FLAGS) -top vea_core; \
+	    tee -o /dev/stdout stat" \
 	  || exit 1
+
+# Places and routes vea_core for ECP5_DEVICE. Prints the device utilisation table, the
+# clock-to-clock critical path (the synchronous logic that caps max frequency; the
+# cross-domain paths to/from unconstrained I/O are noise until there is an LPF file, so
+# they are left out), and the max frequency result. nextpnr's full log (louder still:
+# --no-print-critical-path-source only drops the file/line source annotations) goes to
+# build/pnr.log instead of the terminal. No LPF pin constraints file yet (see
+# vea_core.sv's imem/dmem ports), so nextpnr-ecp5 auto-assigns I/O pins; a real board
+# bring-up will need one.
+pnr:
+	@mkdir -p build
+	@echo "== synth_ecp5 vea_core.sv ($(ECP5_DEVICE))"
+	@$(YOSYS) -q -p "read_verilog $(YOSYS_READ_FLAGS) $(PKG_FILES:%=%.sv) $(RTL_FILES:%=%.sv) vea_core.sv; \
+	  synth_ecp5 $(YOSYS_SYNTH_FLAGS) -top vea_core -json build/vea_core.json"
+	@echo "== nextpnr-ecp5 vea_core.sv ($(ECP5_DEVICE))"
+	@$(NEXTPNR_ECP5) --json build/vea_core.json --$(ECP5_DEVICE) --no-print-critical-path-source \
+	    > build/pnr.log 2>&1; rc=$$?; \
+	  awk '/^Info: Device utilisation:/ {p=1} p {sub(/^Info: ?/, ""); print} p && /^$$/ {p=0}' build/pnr.log; \
+	  echo; \
+	  awk '/Critical path report for clock .* \(posedge -> posedge\):/ {p=1} \
+	       p {sub(/^Info: ?/, ""); print} \
+	       p && /ns logic, .* ns routing/ {p=0}' build/pnr.log; \
+	  echo; \
+	  grep -E "^Info: Max (frequency|delay)" build/pnr.log | sed 's/^Info: //'; \
+	  echo; grep -E "^[0-9]+ warning" build/pnr.log; \
+	  test $$rc -eq 0 || { echo "nextpnr-ecp5 failed, see build/pnr.log"; exit $$rc; }
 
 clean:
 	rm -rf build

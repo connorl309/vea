@@ -72,7 +72,9 @@ module tb_alu #(
       OP_SHL: res = av << shamt;
       OP_SHR: res = av >> shamt;
       OP_SAR: res = $signed(av) >>> shamt;
-      OP_MUL: res = av * bv;
+
+      // vea_mul computes MUL, not this ALU. res and unsupp stay at their default.
+      OP_MUL: ;
 
       OP_CMP: begin
         fl_valid = 1'b1;
@@ -200,7 +202,9 @@ module tb_alu #(
               OP_CMP_S);
   endtask
 
-  // MUL has real silicon: a plain 64x64 multiply, low 64 bits kept, no flags.
+  // MUL is legal, but this ALU takes no part in it. vea_mul computes the result instead
+  // (see tb_mul.sv). Here MUL must just leave result, flags and unsupported at zero, for
+  // every operand pair.
   task automatic test_mul();
     sweep_op("mul", OP_MUL, 2000);
   endtask

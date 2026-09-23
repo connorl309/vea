@@ -144,22 +144,49 @@ module vea_execute (
     endcase
   end
 
-  // ---- Memory ------------------------------------------------------------------------
+  // ---- Multiply ----------------------------------------------------------------------
 
-  //! A load or a store takes two+ cycles: request, then reply.
-  typedef enum logic { S_IDLE, S_MEM_WAIT } mem_state_t;
+  // This value must match vea_alu's ALU_MUL.
+  localparam logic [3:0] ALU_MUL = 4'h9;
 
-  mem_state_t state, next_state;
-  logic       mem_op, mem_req_taken;
+  logic        is_mul, mul_start, mul_valid;
+  logic [63:0] mul_result;
+
+  assign is_mul = ex_alu_op == ALU_MUL;
+
+  vea_mul u_mul (
+    .clk    (clk),
+    .rst_n  (rst_n),
+    .start  (mul_start),
+    .a      (ex_a),
+    .b      (ex_b),
+    .valid  (mul_valid),
+    .result (mul_result)
+  );
+
+  // ---- Memory and multiply wait --------------------------------------------------------
+
+  //! A load or a store takes two+ cycles: request, then reply. MUL takes several cycles
+  //! too, in vea_mul. Both hold Execute the same way. Fetch stages the next instruction
+  //! while either one runs.
+  typedef enum logic [1:0] { S_IDLE, S_MEM_WAIT, S_MUL_WAIT } wait_state_t;
+
+  wait_state_t state, next_state;
+  logic        mem_op, mem_req_taken, mul_op;
 
   assign mem_op        = valid_op && (ex_is_load || ex_is_store);
   assign mem_req_taken = mem_req_valid && mem_req_ready;
+  assign mul_op        = valid_op && is_mul;
 
   always_comb begin
     next_state = state;
     unique case (state)
-      S_IDLE:     if (mem_req_taken) next_state = S_MEM_WAIT;
-      S_MEM_WAIT: if (mem_rvalid)    next_state = S_IDLE;
+      S_IDLE: begin
+        if (mem_req_taken) next_state = S_MEM_WAIT;
+        else if (mul_op)   next_state = S_MUL_WAIT;
+      end
+      S_MEM_WAIT: if (mem_rvalid) next_state = S_IDLE;
+      S_MUL_WAIT: if (mul_valid)  next_state = S_IDLE;
     endcase
   end
 
@@ -169,8 +196,9 @@ module vea_execute (
   end
 
   assign mem_req_valid = (state == S_IDLE) && mem_op;
+  assign mul_start      = (state == S_IDLE) && mul_op;
   // A plain concatenation, field order MSB first as in vea_pkg::mem_req_t
-  assign mem_req       = {alu_result, ex_is_store, ex_mem_size, ex_c};
+  assign mem_req        = {alu_result, ex_is_store, ex_mem_size, ex_c};
 
   // Matches the opinfo size field (LS_SIZE_D/B/H/W). A narrow load sits low in
   // mem_rdata; the rest is sign- or zero-extended.
@@ -199,7 +227,13 @@ module vea_execute (
   //! load/store.
   logic completing;
 
-  assign completing = (state == S_IDLE) ? !mem_op : mem_rvalid;
+  always_comb begin
+    unique case (state)
+      S_IDLE:     completing = !mem_op && !mul_op;
+      S_MEM_WAIT: completing = mem_rvalid;
+      S_MUL_WAIT: completing = mul_valid;
+    endcase
+  end
 
   //! Execute stops asserting ex_ready once stopped, so Decode's stage register can
   //! never empty, so its frame_ready never asserts again, so Fetch never requests
@@ -218,11 +252,14 @@ module vea_execute (
                             && !pc_misaligned;
   assign wb_redirect_pc    = alu_result[63:2];
 
-  // MUL/DIV decode as legal, but vea_alu has no silicon for them and raises
-  // alu_unsupported instead. That must not reach the register file.
+  // DIV decodes as legal, but vea_alu has no silicon for it. It raises alu_unsupported
+  // instead. That must not reach the register file.
+  // MUL decodes as legal too. Its result comes from vea_mul, not vea_alu.
   assign wb_valid = completing && valid_op && ex_wr_en && !alu_unsupported;
   assign wb_rd    = ex_rd;
-  assign wb_data  = ex_is_load ? load_value : alu_result;
+  assign wb_data  = ex_is_load ? load_value
+                   : is_mul    ? mul_result
+                   :             alu_result;
 
   // ---- Status indicators ---------------------------------------------
 

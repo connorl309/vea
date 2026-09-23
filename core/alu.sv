@@ -13,8 +13,10 @@ module vea_alu
   output logic [3:0] flags,
   //! High only for CMP and CMP_S. Other operations must not change the condition codes.
   output logic        flags_valid,
-  //! High for MUL, DIV, and any undefined operation. MUL and DIV have no silicon yet, so
-  //! the core must fault instead of it writing a false result.
+  //! High for DIV, and any undefined operation. DIV has no silicon yet. The core must
+  //! fault instead of writing a false result.
+  //!
+  //! MUL has its own module now, vea_mul. This ALU takes no part in it.
   output logic        unsupported
 );
 
@@ -91,15 +93,12 @@ module vea_alu
         flags_next.overflow = sub_overflow;
       end
 
-      ALU_MUL: begin
-        result = a * b;
-      end
+      // vea_mul computes MUL now, not this case. This case only keeps MUL out of the
+      // unsupported default below.
+      ALU_MUL: ;
 
       // TODO: Come up with a not-shitty division idea here.
-      // We will probably need to feed a (faster) clock into
-      // this ALU module in order to pipeline the divider unit.
-      // Xilinx is cool enough that we can just use a multiply
-      // block for the MUL instruction though.
+      // DIV can reuse the multi-cycle path vea_mul now gives MUL.
       ALU_DIV: begin
         unsupported = 1'b1;
         /*assert (1'b0);*/ $display("vea_alu: DIV has no silicon (op %h)", op);
