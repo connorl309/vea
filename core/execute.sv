@@ -2,7 +2,7 @@
 //!
 //! Execute owns the ALU and the condition codes. It resolves branches and it resolves a
 //! load or a store, so vea_writeback needs no special case for them. vea_mem_if turns
-//! the generic memory port into SPI SRAM signals. vea_writeback holds the register
+//! the generic memory port into SPI memory signals. vea_writeback holds the register
 //! write port and drives the redirect to Fetch and Decode, so every change to
 //! architectural state commits at the same stage.
 //!

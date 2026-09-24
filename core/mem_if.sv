@@ -1,5 +1,5 @@
 //! Memory interface for Vea. It turns the generic load/store port from Execute into a
-//! byte-addressed SPI SRAM transaction: an 8-bit command, then a 24-bit address, then
+//! byte-addressed SPI memory transaction: an 8-bit command, then a 24-bit address, then
 //! the data bytes, most significant byte first. That matches the big-endian byte order
 //! vea_sim's own memory already uses, so a multi-byte load or store lines up with it.
 //!
@@ -7,10 +7,11 @@
 //! while mosi is set up, sck high while the far side samples it (and this side samples
 //! miso, for a read).
 //!
-//! The command bytes are this project's own choice, not a specific commercial chip's.
+//! READ and WRITE use the opcodes of the usual 25-series SPI memories. The program memory
+//! on the board is such a part.
 //!
-//! TODO: spi_miso has no synchronizer. It is a real external input on hardware and
-//! should get one; simulation has no metastability to model, so it does not need it yet.
+//! spi_miso has no synchronizer here. Simulation has no metastability to model.
+//! vea_board_top adds the synchronizer.
 
 module vea_mem_if (
   input  logic clk,
@@ -23,7 +24,7 @@ module vea_mem_if (
   output logic              rvalid,
   output logic [63:0]       rdata,
 
-  //! Package pins, assigned to the SPI SRAM in the constraints file.
+  //! Package pins. vea_board.lpf assigns them to the program memory.
   output logic spi_sck,
   output logic spi_cs_n,
   output logic spi_mosi,

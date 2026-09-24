@@ -20,7 +20,8 @@ module vea_core #(
   input  logic                        imem_rvalid,
   input  logic [8*MAX_INSN_BYTES-1:0] imem_rdata,
 
-  //! Data memory pins, assigned to the SPI SRAM in the constraints file.
+  //! The SPI pins of the load and store port. vea_board_top connects them to the
+  //! program memory.
   output logic dmem_spi_sck,
   output logic dmem_spi_cs_n,
   output logic dmem_spi_mosi,

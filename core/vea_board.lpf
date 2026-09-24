@@ -1,0 +1,138 @@
+# Constraints for the Vea board: LFE5U-12F-6BG256C, caBGA256, speed grade 6.
+#
+# The ball names, the bank numbers and the alternate functions come from the Lattice
+# pinout file of this density, vea-board/fpga-ecp5_12u-pinout.csv, column CABGA256.
+#
+# The Project Trellis device database holds the same data, and it is the data that
+# nextpnr-ecp5 itself uses. This command proves that the two agree, and it fails if a
+# pinout of the wrong density or the wrong package is in use:
+#
+#   python3 vea-board/scripts/gen_ecp5_pinout.py --verify vea-board/fpga-ecp5_12u-pinout.csv
+#
+# Take a ball from the pinout of the density on the board. A pinout of the LFE5U-45F gives
+# four PLLs, and this part has two.
+#
+# Every bank in use here needs VCCIO at 3.3 V for LVCMOS33.
+
+# ---- Configuration -------------------------------------------------------------------
+#
+# The configuration mode pins select the boot source. CFGMDN[2:0] = 010 selects master
+# SPI. The pins are dedicated, so they carry no LOCATE statement. Strap them on the PCB:
+#
+#   CFG_0 (N10) = 0    CFG_1 (P10) = 1    CFG_2 (R10) = 0
+#
+# This file does not set MASTER_SPI_PORT. That setting keeps the master SPI port alive as
+# a configuration port in user mode, which the sysCONFIG user guide calls a Background
+# Mode port. Its purpose is background self-reconfiguration. The design does not use it.
+#
+# COMPRESS_CONFIG makes the bitstream smaller, which shortens the boot time. nextpnr-ecp5
+# and ecppack take COMPRESS_CONFIG and MCCLK_FREQ here. ecppack takes the width of the
+# boot read with --spimode, and background reconfiguration with --background.
+#
+# Board resistors, from Table 6.2 of the hardware checklist (FPGA-TN-02038). Every
+# pull-up goes to VCCIO8:
+#
+#   PROGRAMN  4.7 kOhm pull-up
+#   INITN     4.7 kOhm pull-up
+#   CSSPIN    4.7 kOhm to 10 kOhm pull-up. Put it near the flash.
+#   MCLK/CCLK 510 Ohm to 1 kOhm pull-up, and a 22 Ohm to 80 Ohm series resistor near
+#             the transmit side.
+#   CFG[2:0]  1 kOhm to 10 kOhm pull-up for a 1. Tie to ground for a 0.
+#
+# The dedicated configuration balls, for the schematic:
+#
+#   PROGRAMN R9   INITN T9    DONE P9    CCLK/MCLK N9
+#   TCK T10       TDI R11     TDO M10    TMS T11
+
+SYSCONFIG COMPRESS_CONFIG=ON;
+
+# ---- Boot flash, the master SPI port ------------------------------------------------------
+#
+# The boot flash holds the bitstream only. User logic does not use it. The user program
+# is in a different SPI memory. See the program memory block below.
+#
+# Two kinds of SPI exist on this device, and they are not interchangeable:
+#
+#   1. The master SPI port, below. It boots the device, so its pins are fixed package
+#      pins. No choice of ball exists. Table 6.3 of the hardware checklist (FPGA-TN-02038)
+#      splits them in two groups for MSPI mode:
+#        Shared:    MISO, MOSI, CSSPIN, DOUT for a 1-bit read. D[3:0] and CSSPIN for a
+#                   quad read.
+#        Dedicated: PROGRAMN, INITN, DONE, and the MCLK clock.
+#
+#   2. A SPI device on any other ball. The fabric drives it, so any free user I/O works.
+#      The program memory below is such a device.
+#
+# Size: Table 4.1 of the sysCONFIG user guide (FPGA-TN-02039) gives 5.42 Mb for the
+# largest uncompressed LFE5-12 bitstream. Lattice recommends an 8 Mb SPI flash.
+#
+# Programming: the JTAG port of the FPGA reaches this flash through the master SPI port.
+# The FPGA needs no user design for this. See FPGA-TN-02050.
+#
+# Table 6.2 of the ECP5 Evaluation Board user guide (FPGA-EB-02017) shows the topology
+# that Lattice uses. Its balls are for the LFE5UM5G-85F in caBGA381, not for this part:
+#
+#   CCLK_MCLK_SCK U3    DQ0_MOSI W2    DQ1_MISO V2
+#   BUSY_CSSPIN   R2    DQ2      Y2    DQ3      W1
+#
+# The Dual Function column of the pinout file gives these balls. The Trellis database
+# agrees with each one:
+#
+#   MCLK/CCLK N9   CCLK    dual MCLK/SCK. Dedicated.
+#   CSSPIN    N8   PB15A   dual HOLDN/DI/BUSY/CSSPIN/CEN
+#   D0/MOSI   T8   PB11B   dual D0/MOSI/IO0
+#   D1/MISO   T7   PB11A   dual D1/MISO/IO1
+#   D2        M7   PB9B    dual D2/IO2.  Quad read only.
+#   D3        N7   PB9A    dual D3/IO3.  Quad read only.
+#
+# The design has no port on these balls, so this block has no LOCATE statement.
+
+# ---- Clock ---------------------------------------------------------------------------
+#
+# P6 is LLC_GPLL0T_IN, the reference input of the lower left PLL. The LFE5U-12F has two
+# PLLs, and both sit in the lower corners. P11 (LRC_GPLL0T_IN) is the other one.
+
+LOCATE COMP "clk_25mhz" SITE "P6";
+IOBUF  PORT "clk_25mhz" IO_TYPE=LVCMOS33;
+FREQUENCY PORT "clk_25mhz" 25 MHZ;
+
+# ---- Program memory, external SPI memory -------------------------------------------------
+#
+# This device sits on usual fabric I/O, so these balls are a free choice. Move them to
+# suit the layout. The four pins stay in one bank to keep the skew between them small.
+#
+# vea_mem_if sends a 24-bit address. A part with a 16-bit address reads the wrong bytes.
+#
+# Programming: an external SPI programmer writes this memory through a header on these
+# four nets. Hold PROGRAMN low while it writes. The FPGA then stays in initialization,
+# and its user I/O stay tristated. See sections 4.6.2 and 5.2 of the sysCONFIG user guide
+# (FPGA-TN-02039).
+#
+# Put a pull-up on the chip select near the memory. Before configuration, the user I/O
+# have a weak pull-down. Without the pull-up, the memory is selected during boot.
+
+LOCATE COMP "prog_spi_sck"  SITE "M11";
+LOCATE COMP "prog_spi_cs_n" SITE "M12";
+LOCATE COMP "prog_spi_mosi" SITE "M13";
+LOCATE COMP "prog_spi_miso" SITE "M14";
+
+IOBUF PORT "prog_spi_sck"  IO_TYPE=LVCMOS33 DRIVE=8;
+IOBUF PORT "prog_spi_cs_n" IO_TYPE=LVCMOS33 DRIVE=8;
+IOBUF PORT "prog_spi_mosi" IO_TYPE=LVCMOS33 DRIVE=8;
+IOBUF PORT "prog_spi_miso" IO_TYPE=LVCMOS33 PULLMODE=UP;
+
+# ---- Status indicators -------------------------------------------------------------------
+#
+# Bit 4 is halt. Bits 3 to 0 are the illegal, unsupported, trap and unaligned errors.
+
+LOCATE COMP "led_n[4]" SITE "C1";
+LOCATE COMP "led_n[3]" SITE "C2";
+LOCATE COMP "led_n[2]" SITE "C3";
+LOCATE COMP "led_n[1]" SITE "D1";
+LOCATE COMP "led_n[0]" SITE "D3";
+
+IOBUF PORT "led_n[4]" IO_TYPE=LVCMOS33 DRIVE=8;
+IOBUF PORT "led_n[3]" IO_TYPE=LVCMOS33 DRIVE=8;
+IOBUF PORT "led_n[2]" IO_TYPE=LVCMOS33 DRIVE=8;
+IOBUF PORT "led_n[1]" IO_TYPE=LVCMOS33 DRIVE=8;
+IOBUF PORT "led_n[0]" IO_TYPE=LVCMOS33 DRIVE=8;

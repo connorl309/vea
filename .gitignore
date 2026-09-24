@@ -1,2 +1,8 @@
 target/
 core/build/
+vea-board/vea-board-backups/
+*.bak
+__pycache__/
+*:Zone.Identifier
+~*.lck
+vea-board/fp-info-cache

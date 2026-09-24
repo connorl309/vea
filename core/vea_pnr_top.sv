@@ -10,17 +10,17 @@
 //! the pins.
 //!
 //! The data is pseudo-random, so the core runs garbage. Use this module for timing and
-//! area only. Use vea_core with an LPF file for a real pin map.
+//! area only. vea_board_top holds the real pin map.
 
 module vea_pnr_top (
   input  logic clk,
 
-  //! The SPI pins of the data memory. These are the only pins of a real board that this
-  //! harness keeps.
-  output logic dmem_spi_sck,
-  output logic dmem_spi_cs_n,
-  output logic dmem_spi_mosi,
-  input  logic dmem_spi_miso
+  //! The SPI pins of the program memory. These are the only pins of a real board that
+  //! this harness keeps.
+  output logic prog_spi_sck,
+  output logic prog_spi_cs_n,
+  output logic prog_spi_mosi,
+  input  logic prog_spi_miso
 );
 
   localparam int MAX_INSN_BYTES = 13;
@@ -55,10 +55,10 @@ module vea_pnr_top (
     .imem_addr       (imem_addr),
     .imem_rvalid     (imem_rvalid),
     .imem_rdata      (imem_rdata),
-    .dmem_spi_sck    (dmem_spi_sck),
-    .dmem_spi_cs_n   (dmem_spi_cs_n),
-    .dmem_spi_mosi   (dmem_spi_mosi),
-    .dmem_spi_miso   (dmem_spi_miso),
+    .dmem_spi_sck    (prog_spi_sck),
+    .dmem_spi_cs_n   (prog_spi_cs_n),
+    .dmem_spi_mosi   (prog_spi_mosi),
+    .dmem_spi_miso   (prog_spi_miso),
     .halt            (halt),
     .err_illegal     (err_illegal),
     .err_unsupported (err_unsupported),
